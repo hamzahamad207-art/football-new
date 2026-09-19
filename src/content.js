@@ -116,40 +116,49 @@ async function chatComplete({ systemPrompt, userPrompt }) {
       { role: 'user', content: userPrompt },
     ],
     temperature: 0.8,
-    max_tokens: 400,
+    max_tokens: 800,
   };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  // GLM-4.5+ models "think" by default and can spend the whole token budget
+  // on reasoning_content, leaving `content` empty (what broke the first run).
+  // Z.ai accepts a switch to disable thinking. Sent only for Z.ai/BigModel
+  // endpoints — other OpenAI-compatible providers ignore unknown fields.
+  if (/z\.ai|bigmodel/i.test(baseUrl)) body.thinking = { type: 'disabled' };
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    if (res.status === 401) {
-      throw new Error(
-        `LLM API 401: token expired or incorrect. Generate a new key at ` +
-        `https://z.ai → API Keys and update the LLM_API_KEY secret.`
-      );
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      if (res.status === 401) {
+        throw new Error(
+          `LLM API 401: token expired or incorrect. Generate a new key at ` +
+          `https://z.ai → API Keys and update the LLM_API_KEY secret.`
+        );
+      }
+      if (res.status === 404 || /model.*not.*exist|not found/i.test(errText)) {
+        throw new Error(
+          `LLM API 404: model "${model}" not found. Fix the LLM_MODEL secret — ` +
+          `use 'glm-4.5-flash' (free) or 'glm-4.7-flash', 'glm-4.6', 'glm-5.3'. ` +
+          `(API said: ${errText.slice(0, 200)})`
+        );
+      }
+      throw new Error(`LLM API ${res.status}: ${errText.slice(0, 300)}`);
     }
-    if (res.status === 404 || /model.*not.*exist|not found/i.test(errText)) {
-      throw new Error(
-        `LLM API 404: model "${model}" not found. Fix the LLM_MODEL secret — ` +
-        `use 'glm-4.5-flash' (free) or 'glm-4.7-flash', 'glm-4.6', 'glm-5.3'. ` +
-        `(API said: ${errText.slice(0, 200)})`
-      );
-    }
-    throw new Error(`LLM API ${res.status}: ${errText.slice(0, 300)}`);
+
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    if (text) return text;
+    console.warn(`⚠️  LLM returned empty content (attempt ${attempt}/2). Retrying...`);
   }
-
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content;
-  if (!text) throw new Error('LLM returned empty content');
-  return text;
+  throw new Error('LLM returned empty content after 2 attempts');
 }
 
 /**
