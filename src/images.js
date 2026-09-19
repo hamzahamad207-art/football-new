@@ -211,9 +211,17 @@ export async function pickImageForContent(type, ctx) {
         : [];
   for (const url of articleCandidates) {
     if (!/^https:\/\//i.test(url)) continue;
-    if (await isValidImageUrl(url)) {
-      console.log(`🖼️  Image URL (from article): ${url}`);
-      return { imageUrl: url };
+    // Google thumbnail CDNs often serve ~300px versions; try a larger size
+    // variant first (Threads looks better with a big photo), then the original.
+    const candidates2 = [];
+    const large = url.replace(/(lh3\.googleusercontent\.com[^#?&=]*)[&=]s\d+(?:-w\d+)?/i, '$1=s0-w1200');
+    if (large !== url) candidates2.push(large);
+    candidates2.push(url);
+    for (const u of candidates2) {
+      if (await isValidImageUrl(u)) {
+        console.log(`🖼️  Image URL (from article): ${u}`);
+        return { imageUrl: u };
+      }
     }
   }
   if (articleCandidates.length) {

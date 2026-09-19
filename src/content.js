@@ -235,7 +235,13 @@ async function enrichArticle(item) {
   } catch (err) {
     /* article page unreachable — keep feed-provided data */
   }
-  if (typeof out.title === 'string') out.scoreHeader = scoreHeaderFromTitle(out.title);
+  if (typeof out.title === 'string') {
+    // Trim the trailing " - Publisher" suffix Google News appends to titles.
+    out.title = cleanXmlTitle(out.title)
+      .replace(/\s+[-–]\s+[\p{L}\p{N}]{2,40}$/u, '')
+      .trim();
+    out.scoreHeader = scoreHeaderFromTitle(out.title);
+  }
   return out;
 }
 
@@ -844,6 +850,24 @@ async function isFootballOnly(text, header) {
 }
 
 /**
+ * Quick deterministic quality score for a generated caption — used to pick the
+ * cleaner of two independent draws. Penalizes code/English artifacts harshly,
+ * rewards header faithfulness, ending on a question, an emoji and sane length.
+ */
+function scorePost(text, ctx) {
+  const body = String(text).replace(/^\S[^\n]*\n/, '');
+  if (/\b[a-zA-Z]{2,}\b/.test(body) || /_{2,}|\{\{|\}\}|```/.test(String(text))) return -999;
+  let s = 0;
+  const h = (ctx?.header || '').trim();
+  if (h && String(text).startsWith(h.slice(0, Math.min(30, h.length)))) s += 6;
+  if (/[؟?]\s*$/.test(String(text))) s += 4;
+  if (/[\u{1F300}-\u{1FAFF}]/u.test(String(text))) s += 1;
+  const len = String(text).length;
+  if (len >= 100 && len <= 480) s += 1;
+  return s;
+}
+
+/**
  * Generate the Arabic post text via the LLM, using the template's system +
  * user prompts. Returns a string (cleaned of markdown fences).
  */
@@ -860,27 +884,42 @@ export async function generatePostText(type, ctx) {
       .replace(/^["'“”]|["'“”]$/g, '')
       .trim();
 
-  let text = clean(
-    await chatComplete({
-      systemPrompt: tpl.systemPrompt,
-      userPrompt: tpl.userPrompt(ctx),
-      temperature: tpl.temperature ?? 0.8,
-    })
-  );
-
-  // If the caption drifted off-topic / glitched, regenerate once with a nudge.
-  if (tpl.footballOnly !== false && !(await isFootballOnly(text, ctx?.header))) {
-    console.warn('⚽ Guard: output flagged — regenerating once...');
-    text = clean(
+  const make = async (nudge) =>
+    clean(
       await chatComplete({
         systemPrompt: tpl.systemPrompt,
         userPrompt:
           tpl.userPrompt(ctx) +
-          '\n\nملاحظة: أعد كتابة المنشور حرفيًا بنفس السطر الأول، واجعل الأسطر الخليجية بالعربية فقط ' +
-          '(ممنوع كلمات إنجليزية أو رموز مثل _ داخل النص)، ولا تذكر أي نادٍ/لاعب/رقم غير مذكور في المعلومات أعلاه.',
+          (nudge
+            ? '\n\nملاحظة: أعد كتابة المنشور حرفيًا بنفس السطر الأول، واجعل الأسطر الخليجية بالعربية فقط ' +
+              '(ممنوع كلمات إنجليزية أو رموز مثل _ داخل النص)، ولا تذكر أي نادٍ/لاعب/رقم غير مذكور ' +
+              'في المعلومات أعلاه، واختم دائمًا بسؤال واحد.'
+            : ''),
         temperature: tpl.temperature ?? 0.8,
       })
     );
+
+  // Candidate A (with one guarded regen if the guard flags it).
+  let a = await make(false);
+  if (tpl.footballOnly !== false && !(await isFootballOnly(a, ctx?.header))) {
+    console.warn('⚽ Guard: output flagged — regenerating once...');
+    a = await make(true);
+  }
+  const sa = scorePost(a, ctx);
+  let text = a;
+
+  // News posts: draw an independent second caption and keep the cleaner one,
+  // which smooths out the occasional gibberish token from the free model
+  // (e.g. the "_performance" / nonsense-word glitches).
+  if (type === 'news') {
+    let b = await make(false);
+    if (tpl.footballOnly !== false && !(await isFootballOnly(b, ctx?.header))) {
+      console.warn('⚽ Guard: second draw flagged — regenerating once...');
+      b = await make(true);
+    }
+    const sb = scorePost(b, ctx);
+    text = sb > sa ? b : a;
+    console.log(`✨ Picked better of 2 generated captions (scores ${Math.max(sa, sb)}).`);
   }
 
   // Threads hard cap is 500 chars; trim gently if exceeded.
