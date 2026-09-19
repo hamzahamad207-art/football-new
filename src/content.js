@@ -809,6 +809,14 @@ async function isFootballOnly(text, header) {
     console.warn('⚽ Guard: no football vocabulary in caption — flagged.');
     return false;
   }
+  // Artifact check: the Khaleeji body must contain no English words and no
+  // code tokens (e.g. the "_performance" glitch). The first (header) line may
+  // legitimately contain Latin team names (FT: Sevilla 1 - 3 FC Barcelona).
+  const body = String(text).replace(/^\S[^\n]*\n/, '');
+  if (/\b[a-zA-Z]{2,}\b/.test(body) || /_{2,}|\{\{|\}\}|```/.test(String(text))) {
+    console.warn('⚽ Guard: English/code artifact in caption body — flagged.');
+    return false;
+  }
   try {
     const label = await chatComplete({
       systemPrompt:
@@ -848,13 +856,16 @@ export async function generatePostText(type, ctx) {
     })
   );
 
-  // If the caption drifted off football, regenerate once before giving up on it.
+  // If the caption drifted off-topic / glitched, regenerate once with a nudge.
   if (tpl.footballOnly !== false && !(await isFootballOnly(text, ctx?.header))) {
-    console.warn('⚽ Guard: output drifted off football — regenerating once...');
+    console.warn('⚽ Guard: output flagged — regenerating once...');
     text = clean(
       await chatComplete({
         systemPrompt: tpl.systemPrompt,
-        userPrompt: tpl.userPrompt(ctx),
+        userPrompt:
+          tpl.userPrompt(ctx) +
+          '\n\nملاحظة: أعد كتابة المنشور حرفيًا بنفس السطر الأول، واجعل الأسطر الخليجية بالعربية فقط ' +
+          '(ممنوع كلمات إنجليزية أو رموز مثل _ داخل النص)، ولا تذكر أي نادٍ/لاعب/رقم غير مذكور في المعلومات أعلاه.',
         temperature: tpl.temperature ?? 0.8,
       })
     );
