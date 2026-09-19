@@ -76,7 +76,7 @@ function toEpoch(v) {
   return Number.isFinite(n) ? n : -Infinity;
 }
 
-/** Fetch + parse an RSS feed into [{ title, date }] (date=-Infinity if unset). */
+/** Fetch + parse an RSS feed into [{ title, url, description, image, date }]. */
 async function fetchRssItems(url) {
   const res = await fetch(url, {
     headers: {
@@ -92,19 +92,42 @@ async function fetchRssItems(url) {
   const itemRe = /<item>([\s\S]*?)<\/item>/gi;
   const titleRe = /<title>([\s\S]*?)<\/title>/i;
   const dateRe = /<pubDate>([\s\S]*?)<\/pubDate>/i;
+  const linkRe = /<link>([\s\S]*?)<\/link>/i;
+  const descRe = /<description>([\s\S]*?)<\/description>/i;
+  const mediaRe = /<media:content[^>]+url=["']([^"']+)["']/i;
+  const encRe = /<enclosure[^>]+url=["']([^"']+)["']/i;
+  const imgRe = /<img[^>]+src=["']([^"']+)["']/i;
   let m;
   while ((m = itemRe.exec(xml)) !== null) {
-    const t = titleRe.exec(m[1]);
+    const block = m[1];
+    const t = titleRe.exec(block);
     if (!t || !t[1]) continue;
     const title = cleanXmlTitle(t[1]);
     if (!title) continue;
-    const d = dateRe.exec(m[1]);
-    items.push({ title, date: d && d[1] ? Date.parse(d[1]) : -Infinity });
+
+    const d = dateRe.exec(block);
+    const dm = descRe.exec(block);
+    const description = dm && dm[1] ? cleanXmlTitle(dm[1]).slice(0, 420) : '';
+
+    // Image candidates: media:content > enclosure > first <img> in description.
+    const media = mediaRe.exec(block);
+    const enc = encRe.exec(block);
+    const ig = imgRe.exec(block);
+    const image = media && media[1] ? media[1] : enc && enc[1] ? enc[1] : ig && ig[1] ? ig[1] : '';
+
+    const lk = linkRe.exec(block);
+    items.push({
+      title,
+      date: d && d[1] ? Date.parse(d[1]) : -Infinity,
+      url: lk && lk[1] ? cleanXmlTitle(lk[1]) : '',
+      description,
+      image,
+    });
   }
   return items;
 }
 
-/** Fetch ESPN's soccer news JSON into [{ title, date }]. */
+/** Fetch ESPN's soccer news JSON into [{ title, url, description, image, date }]. */
 async function fetchEspnNews(url) {
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': 'TouchlineARBot/2.0' },
@@ -113,16 +136,71 @@ async function fetchEspnNews(url) {
   if (!res.ok) throw new Error(`ESPN news HTTP ${res.status}`);
   const data = await res.json();
   return (data.articles || [])
-    .map((a) => ({ title: cleanXmlTitle(a.headline || a.description || ''), date: toEpoch(a.published) }))
+    .map((a) => {
+      const description = cleanXmlTitle(a.description || a.headline || '').slice(0, 420);
+      return {
+        title: cleanXmlTitle(a.headline || ''),
+        date: toEpoch(a.published),
+        url: a.links?.web?.href || '',
+        description,
+        image: Array.isArray(a.images) && a.images[0]?.url ? a.images[0].url : '',
+      };
+    })
     .filter((a) => a.title);
+}
+
+/**
+ * When the picked article has no image yet, fetch the article page and pull
+ * its og:image + meta description — the REAL photo and summary straight from
+ * the article itself. Never fails the run; keeps whatever the feed gave us.
+ */
+async function enrichArticle(item) {
+  const out = { ...item };
+  if (out.image || !out.url || !/^https:\/\//i.test(out.url)) return out;
+  try {
+    const res = await fetch(out.url, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,*/*',
+        'User-Agent': 'TouchlineARBot/2.0 (Threads football page)',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return out;
+    const html = await res.text();
+
+    const imgMeta =
+      html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    if (imgMeta && /^https:\/\//i.test(imgMeta[1])) out.image = imgMeta[1];
+
+    const descMeta =
+      html.match(
+        /<meta[^>]+(?:property|name)=["'](?:og:description|description)["'][^>]+content=["']([^"']+)["']/i
+      ) ||
+      html.match(
+        /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:description|description)["']/i
+      );
+    if (descMeta && descMeta[1] && (!out.description || out.description.length < 60)) {
+      out.description = descMeta[1]
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 420);
+    }
+  } catch (err) {
+    /* article page unreachable — keep feed-provided data */
+  }
+  return out;
 }
 
 /**
  * Fetch the most trending/latest football headlines from authentic outlets
  * (ESPN, Sky Sports, BBC Sport, BBC Arabic + the Google News aggregator) in
- * parallel. Dedupes by normalized title and returns the newest unique titles,
- * newest first. Returns [] on total failure — the caller then fails cleanly
- * instead of posting stale/guessed material.
+ * parallel. Dedupes by normalized title and returns the newest unique items as
+ * [{ title, url, description, image, date, source }], newest first. Returns []
+ * on total failure — the caller then fails cleanly instead of posting
+ * stale/guessed material.
  */
 async function fetchTrendingHeadlines() {
   const settled = await Promise.allSettled(
@@ -151,18 +229,25 @@ async function fetchTrendingHeadlines() {
         .trim();
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      all.push({ title: it.title, date: it.date, source: name });
+      all.push({
+        title: it.title,
+        date: it.date,
+        source: name,
+        url: it.url || '',
+        description: it.description || '',
+        image: it.image || '',
+      });
     }
   }
 
   // Truly latest first.
   all.sort((a, b) => b.date - a.date);
 
-  const top = all.slice(0, 12).map((it) => it.title);
+  const top = all.slice(0, 10);
   if (top.length) {
     console.log(
       `🌐 Trending headlines: ${top.length} newest unique items ` +
-        `(sources: ${[...new Set(all.slice(0, 12).map((i) => i.source))].join(', ')})`
+        `(sources: ${[...new Set(top.map((i) => i.source))].join(', ')})`
     );
   }
   return top;
@@ -342,9 +427,10 @@ async function findMatchForTopic(override) {
  * Resolve the topic for this run.
  *   - A --topic / BOT_TOPIC override always wins.
  *   - "news" with no topic → current/ongoing match (live → latest result →
- *     next fixture) → else a fresh BBC Arabic headline. Never canned topics
- *     (that's what let the model invent "Copa del Rey final" style garbage) —
- *     if no fresh data at all, the run fails cleanly instead.
+ *     next fixture) → else a trending headline from ESPN/Sky/BBC/Google News
+ *     (with the article's own summary + photo when available). Never canned
+ *     topics (that's what let the model invent "Copa del Rey final" style
+ *     garbage) — if no fresh data at all, the run fails cleanly instead.
  * Returns { topic, header, summary }.
  */
 export async function fetchNewsContext(type, opts = {}) {
@@ -368,9 +454,23 @@ export async function fetchNewsContext(type, opts = {}) {
   if (type === 'news') {
     const headlines = await fetchTrendingHeadlines();
     if (headlines.length) {
-      const topic = pickRandom(headlines);
-      console.log(`📰 Trending headline picked: ${topic}`);
-      return { topic, header: `📰 ${topic}`, recap: '', summary: '' };
+      // Pick one story, then enrich it with the article's own summary + photo.
+      const item = pickRandom(headlines);
+      const article = await enrichArticle(item);
+      console.log(`📰 Trending headline picked: ${article.title} (${article.source || 'feed'})`);
+      if (article.description) {
+        console.log(
+          `   Article summary: ${article.description.slice(0, 140)}${article.description.length > 140 ? '…' : ''}`
+        );
+      }
+      return {
+        topic: article.title,
+        header: `📰 ${article.title}`,
+        recap: article.description || '',
+        articleImage: article.image || null,
+        articleUrl: article.url || '',
+        source: article.source || '',
+      };
     }
 
     throw new Error(

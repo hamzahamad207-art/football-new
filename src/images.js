@@ -188,6 +188,17 @@ async function isValidImageUrl(url) {
  * Returns { imageUrl } or { imageUrl: null } if none found.
  */
 export async function pickImageForContent(type, ctx) {
+  // 1) Prefer the REAL photo from the article itself (og:image / feed image)
+  //    so news posts carry the actual news photo, not a generic stock shot.
+  if (ctx?.articleImage && /^https:\/\//i.test(ctx.articleImage)) {
+    if (await isValidImageUrl(ctx.articleImage)) {
+      console.log(`🖼️  Image URL (from article): ${ctx.articleImage}`);
+      return { imageUrl: ctx.articleImage };
+    }
+    console.log('⚠️  Article image not fetchable — falling back to real stock photos.');
+  }
+
+  // 2) Stock search: real CC photos from Flickr/Wikimedia etc. — never AI art.
   const queries = [];
   const primary = buildImageQuery(type, ctx);
   queries.push(primary);
