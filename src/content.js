@@ -18,6 +18,13 @@ const DEFAULT_MODEL = 'glm-4.5-flash';
 // Free Arabic football headlines — BBC Arabic sport RSS, no API key needed.
 const BBC_ARABIC_RSS = 'https://feeds.bbci.co.uk/arabic/sport/rss.xml';
 
+// Live / recent / upcoming match data — ESPN's public scoreboard API (no key).
+const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
+const ESPN_LEAGUES = [
+  'eng.1', 'esp.1', 'ita.1', 'bund.1', 'fra.1', 'ksa.1',
+  'uefa.champions', 'uefa.europa',
+];
+
 function llmConfig() {
   const apiKey = process.env.LLM_API_KEY;
   const baseUrl = process.env.LLM_BASE_URL || DEFAULT_BASE_URL;
@@ -71,10 +78,115 @@ async function fetchFreshHeadlines() {
 }
 
 /**
+ * Fetch matches from ESPN's public scoreboard for the major leagues.
+ * Returns a flat array of normalized matches: label, state (pre/in/post),
+ * score, minute detail, recap text, kick-off date.
+ */
+async function fetchCurrentMatches() {
+  const settled = await Promise.allSettled(
+    ESPN_LEAGUES.map(async (league) => {
+      const res = await fetch(`${ESPN_SCOREBOARD}/${league}/scoreboard`, {
+        headers: { Accept: 'application/json', 'User-Agent': 'TouchlineARBot/2.0' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const out = [];
+      for (const ev of data.events || []) {
+        const comp = ev.competitions?.[0];
+        const st = comp?.status?.type;
+        if (!st || !comp) continue;
+        const home = comp.competitors?.find((c) => c.homeAway === 'home');
+        const away = comp.competitors?.find((c) => c.homeAway === 'away');
+        const label =
+          home && away
+            ? `${home.team?.displayName} vs ${away.team?.displayName}`
+            : ev.name || 'Football match';
+        const score =
+          home?.score !== undefined && away?.score !== undefined
+            ? `${home.score} - ${away.score}`
+            : '';
+        out.push({
+          league,
+          label,
+          state: st.state, // 'pre' | 'in' | 'post'
+          detail: st.shortDetail || '', // e.g. "67'", "FT"
+          score,
+          summary: comp.headlines?.[0]?.description || '', // recap sentence
+          date: new Date(ev.date),
+        });
+      }
+      return out;
+    })
+  );
+  return settled.filter((r) => r.status === 'fulfilled').flatMap((r) => r.value);
+}
+
+/**
+ * Pick the most interesting match right now:
+ * 1) any match in progress (live), 2) the latest finished match with a recap,
+ * 3) the next kick-off. Returns {match, tag} or null.
+ */
+function pickBestMatch(matches) {
+  const now = Date.now();
+  const live = matches.filter((m) => m.state === 'in');
+  if (live.length) return { match: live[0], tag: 'live' };
+
+  const finished = matches
+    .filter((m) => m.state === 'post' && now - m.date.getTime() < 48 * 3600e3)
+    .sort((a, b) => b.date - a.date);
+  if (finished.length) {
+    const withSummary = finished.find((m) => m.summary) || finished[0];
+    return { match: withSummary, tag: 'recent' };
+  }
+
+  const upcoming = matches
+    .filter((m) => m.state === 'pre' && m.date.getTime() > now)
+    .sort((a, b) => a.date - b.date);
+  if (upcoming.length) return { match: upcoming[0], tag: 'upcoming' };
+  return null;
+}
+
+/**
+ * Build a {topic, summary} context for the current/ongoing match so "news"
+ * posts are about real games happening right now.
+ */
+async function getLiveMatchContext() {
+  try {
+    const matches = await fetchCurrentMatches();
+    const pick = pickBestMatch(matches);
+    if (!pick) return null;
+    const m = pick.match;
+    if (pick.tag === 'live') {
+      console.log(`🔴 Live match: ${m.label} ${m.score} (${m.detail})`);
+      return {
+        topic: m.label,
+        summary: `المباراة الآن بين ${m.label} والنتيجة ${m.score} في الدقيقة ${m.detail}.`,
+      };
+    }
+    if (pick.tag === 'recent') {
+      console.log(`📰 Latest result: ${m.label} ${m.score}`);
+      return {
+        topic: m.label,
+        summary: `انتهت مباراة ${m.label} ${m.score ? `بنتيجة ${m.score}` : ''}. ${m.summary}`,
+      };
+    }
+    console.log(`📅 Next match: ${m.label}`);
+    return {
+      topic: m.label,
+      summary: `مباراة قادمة: ${m.label}. ${m.summary}`,
+    };
+  } catch (err) {
+    console.warn(`⚠️  Could not fetch live matches (${err.message}).`);
+    return null;
+  }
+}
+
+/**
  * Resolve the topic for this run.
  *   - A --topic / BOT_TOPIC override always wins.
- *   - "news" tries a fresh BBC Arabic headline first.
- *   - Otherwise a random topic from FALLBACK_TOPICS.
+ *   - "news" with no topic → current/ongoing match (live → latest result →
+ *     next fixture) → else a fresh BBC Arabic headline → else canned topics.
  * Returns { topic, summary }.
  */
 export async function fetchNewsContext(type, opts = {}) {
@@ -87,6 +199,9 @@ export async function fetchNewsContext(type, opts = {}) {
   }
 
   if (type === 'news') {
+    const live = await getLiveMatchContext();
+    if (live) return live;
+
     const headlines = await fetchFreshHeadlines();
     if (headlines.length) {
       const topic = pickRandom(headlines);
