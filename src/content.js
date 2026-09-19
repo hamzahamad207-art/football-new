@@ -109,6 +109,10 @@ async function fetchCurrentMatches() {
         out.push({
           league,
           label,
+          homeName: home?.team?.displayName || '',
+          awayName: away?.team?.displayName || '',
+          homeScore: home?.score,
+          awayScore: away?.score,
           state: st.state, // 'pre' | 'in' | 'post'
           detail: st.shortDetail || '', // e.g. "67'", "FT"
           score,
@@ -148,6 +152,23 @@ function pickBestMatch(matches) {
 }
 
 /**
+ * Deterministic Arabic result sentence built from ESPN's score fields —
+ * the model can't "decide" who won, it only reports what the API said.
+ */
+function resultArabic(m) {
+  const hs = m.homeScore;
+  const as = m.awayScore;
+  const hasScore = hs !== undefined && hs !== null && as !== undefined && as !== null;
+  if (!hasScore) return `انتهت مباراة ${m.label}.`;
+  if (String(hs) === String(as)) return `انتهت مباراة ${m.label} بالتعادل ${hs} - ${as}.`;
+  const homeWon = Number(hs) > Number(as);
+  const winner = homeWon ? m.homeName : m.awayName;
+  const loser = homeWon ? m.awayName : m.homeName;
+  const score = homeWon ? `${hs} - ${as}` : `${as} - ${hs}`;
+  return `فاز ${winner} على ${loser} بنتيجة ${score}.`;
+}
+
+/**
  * Build a {topic, summary} context for the current/ongoing match so "news"
  * posts are about real games happening right now.
  */
@@ -161,14 +182,15 @@ async function getLiveMatchContext() {
       console.log(`🔴 Live match: ${m.label} ${m.score} (${m.detail})`);
       return {
         topic: m.label,
-        summary: `المباراة الآن بين ${m.label} والنتيجة ${m.score} في الدقيقة ${m.detail}.`,
+        summary: `تُلعب الآن مباراة ${m.label}، والنتيجة الحالية ${m.homeName} ${m.score ? m.score.split(' - ')[0] : '?'} - ${m.score ? m.score.split(' - ')[1] : '?'} ${m.awayName}${m.detail ? ` (${m.detail})` : ''}.`,
       };
     }
     if (pick.tag === 'recent') {
       console.log(`📰 Latest result: ${m.label} ${m.score}`);
+      const extra = m.summary ? ` ${m.summary}` : '';
       return {
         topic: m.label,
-        summary: `انتهت مباراة ${m.label} ${m.score ? `بنتيجة ${m.score}` : ''}. ${m.summary}`,
+        summary: `${resultArabic(m)}${extra}`,
       };
     }
     console.log(`📅 Next match: ${m.label}`);
@@ -276,6 +298,52 @@ async function chatComplete({ systemPrompt, userPrompt }) {
   throw new Error('LLM returned empty content after 2 attempts');
 }
 
+// Hard football vocabulary used by the deterministic domain check — a caption
+// that contains none of these (in Arabic or common Latin tokens) isn't about
+// football, no matter what the model's classifier claims.
+const FOOTBALL_TERMS = [
+  // Arabic core terms
+  'كرة', 'مباراة', 'فريق', 'دوري', 'لاعب', 'هدف', 'أهداف', 'ملعب', 'ناد',
+  'نادي', 'حكم', 'بطولة', 'كأس', 'مدرب', 'جمهور', 'مشجع', 'هجوم', 'دفاع',
+  'مرمى', 'تشكيل', 'تسديدة', 'انتصار', 'فوز', 'هزيمة', 'خسارة', 'تعادل',
+  'صدارة', 'نهائي', 'جولة', 'جول', 'سجل', 'كرة القدم', 'القدم',
+  // League / team / player names (Arabic + Latin fallback)
+  'ليجا', 'بريميرليج', 'روشن', 'دوري أبطال', 'برشلونة', 'البارسا', 'ريال',
+  'الأهلي', 'الهلال', 'النصر', 'الاتحاد', 'ميسي', 'رونالدو', 'مبابي',
+  'صلاح', 'هالاند', 'غوارديولا', 'أنشيلوتي', 'المضيّف', 'calendar', 'league',
+  'match', 'goal', 'team', 'stadium', 'football',
+];
+function containsFootballVocab(text) {
+  return FOOTBALL_TERMS.some((t) => text.toLowerCase().includes(t.toLowerCase()));
+}
+
+/**
+ * Domain guard for the generated caption. Two layers:
+ *   1. A deterministic check — no football vocabulary at all ⇒ automatically
+ *      flagged (catches the "Gen Z study habits", "military", etc. rambles).
+ *   2. An LLM classifier as a second opinion.
+ * Returns true (football) or false (off-topic → generation will be retried).
+ */
+async function isFootballOnly(text) {
+  const hasVocab = containsFootballVocab(text);
+  if (!hasVocab) {
+    console.warn('⚽ Guard: no football vocabulary in caption — flagged.');
+    return false;
+  }
+  try {
+    const label = await chatComplete({
+      systemPrompt:
+        'أنت مصنف محتوى صارم. أجِب بكلمة واحدة فقط: "نعم" أو "لا". ' +
+        'أجب "نعم" فقط إذا كان النص يدور بشكل واضح وغالب عن كرة القدم. وإلا أجب "لا".',
+      userPrompt: `هل النص التالي عن كرة القدم فقط؟\n\n"${text.slice(0, 600)}"`,
+    });
+    return /نعم/.test(label);
+  } catch (err) {
+    console.warn(`⚠️  Guard check failed (${err.message}) — trusting vocabulary check.`);
+    return hasVocab;
+  }
+}
+
 /**
  * Generate the Arabic post text via the LLM, using the template's system +
  * user prompts. Returns a string (cleaned of markdown fences).
@@ -286,17 +354,30 @@ export async function generatePostText(type, ctx) {
 
   console.log(`✍️  Generating ${type} post in Khaleeji Arabic...`);
 
-  let text = await chatComplete({
-    systemPrompt: tpl.systemPrompt,
-    userPrompt: tpl.userPrompt(ctx),
-  });
+  const clean = (t) =>
+    t
+      .replace(/^```[a-z]*\n?/i, '')
+      .replace(/```$/i, '')
+      .replace(/^["'“”]|["'“”]$/g, '')
+      .trim();
 
-  // Cleanup markdown fences / wrapping quotes
-  text = text
-    .replace(/^```[a-z]*\n?/i, '')
-    .replace(/```$/i, '')
-    .replace(/^["'“”]|["'“”]$/g, '')
-    .trim();
+  let text = clean(
+    await chatComplete({
+      systemPrompt: tpl.systemPrompt,
+      userPrompt: tpl.userPrompt(ctx),
+    })
+  );
+
+  // If the caption drifted off football, regenerate once before giving up on it.
+  if (tpl.footballOnly !== false && !(await isFootballOnly(text))) {
+    console.warn('⚽ Guard: output drifted off football — regenerating once...');
+    text = clean(
+      await chatComplete({
+        systemPrompt: tpl.systemPrompt,
+        userPrompt: tpl.userPrompt(ctx),
+      })
+    );
+  }
 
   // Threads hard cap is 500 chars; trim gently if exceeded.
   if (text.length > 490) {
