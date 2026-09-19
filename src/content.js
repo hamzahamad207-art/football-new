@@ -13,7 +13,7 @@
 import { TEMPLATES, FALLBACK_TOPICS, LEAGUES, pickRandom } from './templates.js';
 
 const DEFAULT_BASE_URL = 'https://api.z.ai/api/paas/v4';
-const DEFAULT_MODEL = 'glm-4.5-flash';
+const DEFAULT_MODEL = 'glm-4.7-flash';
 
 // Free Arabic football headlines — BBC Arabic sport RSS, no API key needed.
 const BBC_ARABIC_RSS = 'https://feeds.bbci.co.uk/arabic/sport/rss.xml';
@@ -169,8 +169,39 @@ function resultArabic(m) {
 }
 
 /**
- * Build a {topic, summary} context for the current/ongoing match so "news"
- * posts are about real games happening right now.
+ * Turn a raw ESPN match + tag into the {topic, header, matchUp, summary, recap}
+ * context used by all templates. `header` is a deterministic TouchlineX-style
+ * line (LIVE/FT/NEXT) the model must copy verbatim — it can't invent a score
+ * or a different match. `recap` carries the API recap sentence (real info,
+ * optional flavor) the model may paraphrase but never exceed.
+ */
+function annotateMatch(m, tag) {
+  const matchUp = `${m.awayName || ''} ${m.homeName || ''}`.trim() || m.label;
+  const hs = m.score ? m.score.split(' - ')[0] : '?';
+  const as = m.score ? m.score.split(' - ')[1] : '?';
+
+  let header;
+  if (tag === 'live') {
+    const minute = /\d+/.test(m.detail) ? ` ${m.detail}` : '';
+    header = `LIVE: ${m.homeName} ${hs} - ${as} ${m.awayName}${minute}`;
+  } else if (tag === 'recent') {
+    header = `FT: ${m.homeName} ${hs} - ${as} ${m.awayName}`;
+  } else {
+    header = `NEXT: ${m.label}`;
+  }
+
+  return {
+    topic: m.label,
+    matchUp,
+    header,
+    recap: m.summary || '',
+    summary: resultArabic(m),
+  };
+}
+
+/**
+ * Build a {topic, header, matchUp, recap, summary} context for the current/
+ * ongoing match so "news" posts are real-time and factually anchored.
  */
 async function getLiveMatchContext() {
   try {
@@ -178,28 +209,40 @@ async function getLiveMatchContext() {
     const pick = pickBestMatch(matches);
     if (!pick) return null;
     const m = pick.match;
-    if (pick.tag === 'live') {
-      console.log(`🔴 Live match: ${m.label} ${m.score} (${m.detail})`);
-      return {
-        topic: m.label,
-        summary: `تُلعب الآن مباراة ${m.label}، والنتيجة الحالية ${m.homeName} ${m.score ? m.score.split(' - ')[0] : '?'} - ${m.score ? m.score.split(' - ')[1] : '?'} ${m.awayName}${m.detail ? ` (${m.detail})` : ''}.`,
-      };
-    }
-    if (pick.tag === 'recent') {
-      console.log(`📰 Latest result: ${m.label} ${m.score}`);
-      const extra = m.summary ? ` ${m.summary}` : '';
-      return {
-        topic: m.label,
-        summary: `${resultArabic(m)}${extra}`,
-      };
-    }
-    console.log(`📅 Next match: ${m.label}`);
-    return {
-      topic: m.label,
-      summary: `مباراة قادمة: ${m.label}. ${m.summary}`,
-    };
+    if (pick.tag === 'live') console.log(`🔴 Live match: ${m.label} ${m.score} (${m.detail})`);
+    if (pick.tag === 'recent') console.log(`📰 Latest result: ${m.label} ${m.score}`);
+    if (pick.tag === 'upcoming') console.log(`📅 Next match: ${m.label}`);
+    return annotateMatch(m, pick.tag);
   } catch (err) {
     console.warn(`⚠️  Could not fetch live matches (${err.message}).`);
+    return null;
+  }
+}
+
+/**
+ * Try to resolve a user-typed topic (e.g. "Barcelona vs Sevilla") against the
+ * live ESPN fixtures so the post carries the REAL score/happening instead of
+ * the model guessing. Returns the annotated context or null if no fixture
+ * matches.
+ */
+async function findMatchForTopic(override) {
+  try {
+    const matches = await fetchCurrentMatches();
+    const tokens = override.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
+
+    const hit = matches.find((m) => {
+      const nameBroad = `${m.homeName} ${m.awayName} ${m.label}`.toLowerCase();
+      if (tokens.some((t) => nameBroad.includes(t))) return true;
+      const nameParts = [m.homeName, m.awayName].map((n) => n.toLowerCase()).filter(Boolean);
+      return nameParts.filter((n) => tokens.some((t) => n.includes(t) || t.includes(n))).length >= 2;
+    });
+
+    if (!hit) return null;
+    const tag = hit.state === 'in' ? 'live' : hit.state === 'post' ? 'recent' : 'upcoming';
+    console.log(`🎯 Topic matched a live fixture → ${tag}`);
+    return annotateMatch(hit, tag);
+  } catch (err) {
+    console.warn(`⚠️  Could not search matches for topic (${err.message}).`);
     return null;
   }
 }
@@ -208,33 +251,46 @@ async function getLiveMatchContext() {
  * Resolve the topic for this run.
  *   - A --topic / BOT_TOPIC override always wins.
  *   - "news" with no topic → current/ongoing match (live → latest result →
- *     next fixture) → else a fresh BBC Arabic headline → else canned topics.
- * Returns { topic, summary }.
+ *     next fixture) → else a fresh BBC Arabic headline. Never canned topics
+ *     (that's what let the model invent "Copa del Rey final" style garbage) —
+ *     if no fresh data at all, the run fails cleanly instead.
+ * Returns { topic, header, summary }.
  */
 export async function fetchNewsContext(type, opts = {}) {
-  const tpl = TEMPLATES[type];
   const override = (opts.topicOverride || '').trim();
 
   if (override) {
-    console.log(`🎯 Topic override: "${override}"`);
-    return { topic: override, summary: '' };
+    // Try to attach the REAL live fixture when the user names a match —
+    // accurate score + recap instead of the model guessing.
+    const found = await findMatchForTopic(override);
+    if (found) return found;
+    console.log(`🎯 Topic override (no live fixture found): "${override}"`);
+    return { topic: override, header: `🚨 ${override}`, recap: '', summary: '' };
+  }
+
+  // Real-time content whenever it's available — not just for "news".
+  if (type === 'news' || type === 'stats' || type === 'analysis') {
+    const live = await getLiveMatchContext();
+    if (live) return live;
   }
 
   if (type === 'news') {
-    const live = await getLiveMatchContext();
-    if (live) return live;
-
     const headlines = await fetchFreshHeadlines();
     if (headlines.length) {
       const topic = pickRandom(headlines);
       console.log(`📰 Fresh headline (BBC Arabic): ${topic}`);
-      return { topic, summary: '' };
+      return { topic, header: `📰 ${topic}`, recap: '', summary: '' };
     }
+
+    throw new Error(
+      `No current match data from ESPN and no fresh BBC Arabic headline available ` +
+      `right now. Try again later, or run with a specific --topic.`
+    );
   }
 
   const topic = pickRandom(FALLBACK_TOPICS[type]);
   console.log(`📋 Random canned topic: ${topic}`);
-  return { topic, summary: '' };
+  return { topic, header: `🚨 ${topic}`, recap: '', summary: '' };
 }
 
 /**
@@ -242,7 +298,7 @@ export async function fetchNewsContext(type, opts = {}) {
  * Defaults to Z.ai's public GLM API; can be repointed to OpenAI / Groq /
  * OpenRouter via env vars.
  */
-async function chatComplete({ systemPrompt, userPrompt }) {
+async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
   const { apiKey, baseUrl, model } = llmConfig();
   const url = `${baseUrl}/chat/completions`;
 
@@ -252,7 +308,7 @@ async function chatComplete({ systemPrompt, userPrompt }) {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
-    temperature: 0.8,
+    temperature,
     max_tokens: 800,
   };
 
@@ -270,6 +326,7 @@ async function chatComplete({ systemPrompt, userPrompt }) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000),
     });
 
     if (!res.ok) {
@@ -319,13 +376,16 @@ function containsFootballVocab(text) {
 
 /**
  * Domain guard for the generated caption. Two layers:
- *   1. A deterministic check — no football vocabulary at all ⇒ automatically
- *      flagged (catches the "Gen Z study habits", "military", etc. rambles).
- *   2. An LLM classifier as a second opinion.
+ *   1. Anchoring: if the caption starts with our own match header (FT/LIVE/
+ *      NEXT/🚨/📰) it is definitively football — trust it.
+ *   2. Vocabulary check — none of our football terms at all ⇒ flagged
+ *      (catches the "Gen Z study habits", "military", etc. rambles).
+ *   3. An LLM classifier as a second opinion.
  * Returns true (football) or false (off-topic → generation will be retried).
  */
-async function isFootballOnly(text) {
-  const hasVocab = containsFootballVocab(text);
+async function isFootballOnly(text, header) {
+  const anchored = header && /^(?:FT|LIVE|NEXT|🚨|📰)/.test(text);
+  const hasVocab = anchored || containsFootballVocab(text);
   if (!hasVocab) {
     console.warn('⚽ Guard: no football vocabulary in caption — flagged.');
     return false;
@@ -365,16 +425,18 @@ export async function generatePostText(type, ctx) {
     await chatComplete({
       systemPrompt: tpl.systemPrompt,
       userPrompt: tpl.userPrompt(ctx),
+      temperature: tpl.temperature ?? 0.8,
     })
   );
 
   // If the caption drifted off football, regenerate once before giving up on it.
-  if (tpl.footballOnly !== false && !(await isFootballOnly(text))) {
+  if (tpl.footballOnly !== false && !(await isFootballOnly(text, ctx?.header))) {
     console.warn('⚽ Guard: output drifted off football — regenerating once...');
     text = clean(
       await chatComplete({
         systemPrompt: tpl.systemPrompt,
         userPrompt: tpl.userPrompt(ctx),
+        temperature: tpl.temperature ?? 0.8,
       })
     );
   }

@@ -89,6 +89,7 @@ async function main() {
   // 1. Fetch news / context (pass topic override if provided)
   const ctx = await fetchNewsContext(type, { topicOverride: args.topic });
   console.log(`📋 Topic: ${ctx.topic}`);
+  if (ctx.header) console.log(`   Header: ${ctx.header}`);
   if (ctx.summary) console.log(`   Summary: ${ctx.summary.slice(0, 100)}...`);
 
   // 2. Generate Arabic post text via LLM
@@ -99,6 +100,9 @@ async function main() {
   const { imageUrl } = await pickImageForContent(type, ctx);
   if (imageUrl) {
     console.log(`🖼️  Image URL: ${imageUrl}\n`);
+  } else if (args.post) {
+    // TouchlineX-style posts always ship with a photo — refuse to publish one without it.
+    throw new Error('No valid image found — post aborted. Retry with a different topic or try again later.');
   } else {
     console.log(`⚠️  No image — will be text-only post.\n`);
   }
