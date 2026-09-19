@@ -26,17 +26,17 @@ const ESPN_LEAGUES = [
 ];
 
 // Trending-headline sources — authentic football outlets, no API keys needed.
-// ESPN exposes a news JSON endpoint; Sky/BBC/Google News are RSS feeds. All
-// are fetched in parallel and the newest unique titles win.
+// ESPN's news endpoint is excluded: their API 403s from many IPs (incl. some
+// GitHub runners), and Sky/BBC/Google already cover the same ground reliably.
+// All feeds are fetched in parallel and the newest unique titles win.
 const NEWS_FEEDS = {
-  ESPN: { kind: 'json', url: 'https://site.api.espn.com/apis/site/v2/sports/soccer/news' },
-  'Sky Sports': { kind: 'rss', url: 'https://www.skysports.com/rss/12040' },
   'BBC Sport': { kind: 'rss', url: 'https://feeds.bbci.co.uk/sport/football/rss.xml' },
+  'Sky Sports': { kind: 'rss', url: 'https://www.skysports.com/rss/12040' },
+  'BBC Arabic': { kind: 'rss', url: BBC_ARABIC_RSS },
   'Google News': {
     kind: 'rss',
-    url: 'https://news.google.com/rss/search?q=football&hl=en-GB&gl=GB&ceid=GB:en',
+    url: 'https://news.google.com/rss/search?q=football+results&hl=en-GB&gl=GB&ceid=GB:en',
   },
-  'BBC Arabic': { kind: 'rss', url: BBC_ARABIC_RSS },
 };
 
 // The Google News aggregator also surfaces non-soccer items ("American
@@ -57,14 +57,17 @@ function llmConfig() {
   return { apiKey, baseUrl, model };
 }
 
-/** Strip XML/CDATA/entities noise out of an RSS title. */
+/** Strip XML/CDATA/entities noise out of an RSS/HTML title or snippet. */
 function cleanXmlTitle(raw) {
   return String(raw)
     .replace(/<!\[CDATA\[|\]\]>/g, '')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^>]+>/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -150,13 +153,14 @@ async function fetchEspnNews(url) {
 }
 
 /**
- * When the picked article has no image yet, fetch the article page and pull
- * its og:image + meta description — the REAL photo and summary straight from
- * the article itself. Never fails the run; keeps whatever the feed gave us.
+ * Enrich an article item from its page: collect the article's REAL photos
+ * (all og:image metas + JSON-LD images) and its summary (meta description or
+ * JSON-LD articleBody). Never fails the run — keeps whatever the feed gave us
+ * when the page is unreachable.
  */
 async function enrichArticle(item) {
-  const out = { ...item };
-  if (out.image || !out.url || !/^https:\/\//i.test(out.url)) return out;
+  const out = { ...item, images: item.images || [] };
+  if ((!out.url || !/^https:\/\//i.test(out.url)) && !out.images.length) return out;
   try {
     const res = await fetch(out.url, {
       headers: {
@@ -169,11 +173,40 @@ async function enrichArticle(item) {
     if (!res.ok) return out;
     const html = await res.text();
 
-    const imgMeta =
-      html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
-      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
-    if (imgMeta && /^https:\/\//i.test(imgMeta[1])) out.image = imgMeta[1];
+    // 1) Photos: every og:image meta (in page order) + JSON-LD image entries.
+    const imgUrls = [];
+    const imgRe = /<meta[^>]+(?:property|name)=["']og:image["'][^>]+content=["']([^"']+)["']/gi;
+    let m2;
+    while ((m2 = imgRe.exec(html)) !== null) {
+      if (/^https:\/\//i.test(m2[1])) imgUrls.push(m2[1]);
+    }
+    const revImgRe = /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:image["']/gi;
+    while ((m2 = revImgRe.exec(html)) !== null) {
+      if (/^https:\/\//i.test(m2[1])) imgUrls.push(m2[1]);
+    }
+    const ldScript = html.match(/<script type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (ldScript) {
+      try {
+        const parsed = JSON.parse(ldScript[1]);
+        const art = Array.isArray(parsed)
+          ? parsed.find((p) => p && /(?:News)?Article/.test(p['@type'] || ''))
+          : parsed;
+        const img = art?.image || art?.thumbnailUrl || [];
+        const list = Array.isArray(img) ? img : [img];
+        for (const i of list) {
+          const u = typeof i === 'string' ? i : i?.url;
+          if (typeof u === 'string' && /^https:\/\//i.test(u)) imgUrls.push(u);
+        }
+      } catch (err) {
+        /* bad JSON — ignore */
+      }
+    }
+    for (const u of imgUrls) {
+      if (!out.images.includes(u)) out.images.push(u);
+    }
+    if (out.images.length > 6) out.images.length = 6;
 
+    // 2) Summary: meta description → else JSON-LD articleBody/description.
     const descMeta =
       html.match(
         /<meta[^>]+(?:property|name)=["'](?:og:description|description)["'][^>]+content=["']([^"']+)["']/i
@@ -181,16 +214,28 @@ async function enrichArticle(item) {
       html.match(
         /<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:description|description)["']/i
       );
-    if (descMeta && descMeta[1] && (!out.description || out.description.length < 60)) {
-      out.description = descMeta[1]
-        .replace(/<[^>]+>/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 420);
+    if (descMeta && descMeta[1]) {
+      const d = cleanXmlTitle(descMeta[1]);
+      if (!out.description || out.description.length < 60) out.description = d.slice(0, 420);
     }
+    if (ldScript) {
+      try {
+        const parsed = JSON.parse(ldScript[1]);
+        const art = Array.isArray(parsed)
+          ? parsed.find((p) => p && /(?:News)?Article/.test(p['@type'] || ''))
+          : parsed;
+        if (art?.articleBody && !out.description) {
+          out.description = cleanXmlTitle(art.articleBody).slice(0, 420);
+        }
+      } catch (err) {
+        /* ignore */
+      }
+    }
+    out.description = cleanXmlTitle(out.description).slice(0, 420);
   } catch (err) {
     /* article page unreachable — keep feed-provided data */
   }
+  if (typeof out.title === 'string') out.scoreHeader = scoreHeaderFromTitle(out.title);
   return out;
 }
 
@@ -388,26 +433,27 @@ async function fetchMatchFacts(m) {
 }
 
 /**
- * Find the FRESHEST news article about a specific match (e.g. tonight's
- * "Barcelona vs Sevilla") via a Google News query scoped to the last ~24h and
- * filtered to titles mentioning either team. Returns its title/summary/image —
- * a real, current article about the game that was just played — or null.
+ * Find the FRESHEST news article/report about a specific match (e.g. tonight's
+ * "Barcelona vs Sevilla") via a Google News query scoped to the last ~26h and
+ * filtered to titles mentioning either team. Prefers articles that read like
+ * reports (result words / scores). Returns title, real summary + the article's
+ * photos — or null when nothing fresh is found.
  */
 async function fetchMatchArticle(matchUp, teamNames) {
-  const terms = [matchUp, ...teamNames.filter(Boolean)]
-    .map((t) => `"${t}"`)
-    .join(' ');
-  if (!terms.trim()) return null;
+  const names = teamNames.filter(Boolean);
+  const query =
+    `${matchUp ? `"${matchUp}" ` : ''}${names.map((t) => `"${t}"`).join(' ')} result`.trim();
+  if (!query) return null;
   const feedUrl =
-    `https://news.google.com/rss/search?q=${encodeURIComponent(terms + ' soccer football')}` +
+    `https://news.google.com/rss/search?q=${encodeURIComponent(query)}` +
     `&hl=en-GB&gl=GB&ceid=GB:en`;
 
   try {
     const items = await fetchRssItems(feedUrl);
     const now = Date.now();
-    const lowerNames = teamNames.filter(Boolean).map((t) => t.toLowerCase());
+    const lowerNames = names.map((t) => t.toLowerCase());
 
-    const fresh = items
+    const candidates = items
       .filter((it) => Number.isFinite(it.date) && now - it.date < 26 * 3600e3)
       .filter((it) => {
         const lower = it.title.toLowerCase();
@@ -415,21 +461,63 @@ async function fetchMatchArticle(matchUp, teamNames) {
       })
       .sort((a, b) => b.date - a.date);
 
-    if (!fresh.length) return null;
-    const best = fresh[0];
-    let image = best.image || '';
-    if (!image) image = (await enrichArticle(best)).image || '';
+    if (!candidates.length) return null;
+
+    // Enrich the top few candidates; prefer the one with a real article
+    // summary (Google News sometimes returns boilerplate text) and a scoreline.
+    const genericRe = /comprehensive up-to-date|google news|powered by|coverage of/i;
+    const enrichedList = await Promise.all(candidates.slice(0, 3).map((c) => enrichArticle(c)));
+    const best =
+      enrichedList.find(
+        (e) => (e.description || '').length >= 60 && !genericRe.test(e.description)
+      ) ||
+      enrichedList.find((e) => e.scoreHeader) ||
+      enrichedList[0];
 
     console.log(`🗞️ Fresh article about this match (${best.title.slice(0, 80)}...)`);
+
     return {
       title: best.title,
       description: best.description || '',
-      image,
+      images: best.images || [],
+      image: (best.images || [])[0] || '',
       url: best.url || '',
+      scoreHeader: best.scoreHeader || null,
     };
   } catch (err) {
     return null;
   }
+}
+
+/**
+ * If an article title is shaped like a scoreline ("Sevilla FC 1 - 3 FC
+ * Barcelona | ..."), build the deterministic TouchlineX FT header from the
+ * real result. Returns null otherwise.
+ */
+function scoreHeaderFromTitle(raw) {
+  let t = String(raw || '').replace(/\s*[|:\u2014\u2015]\s.*$/u, '').trim();
+  // Strip a trailing " - Source" suffix (after the last team name).
+  t = t.replace(/\s+[-–]\s+[\p{L}\p{N}]{2,40}$/u, '').trim();
+  const m = t.match(/^(.{2,40}?)\s+(\d{1,2})\s*[-–—]\s*(\d{1,2})\s+(.{2,40})$/);
+  if (!m) return null;
+  return `FT: ${m[1].trim()} ${m[2]} - ${m[3]} ${m[4].trim()}`;
+}
+
+/**
+ * Split a typed topic like "Barcelona vs Sevilla" / "البارسا ضد ريال" into
+ * the most specific team keywords (last word of each side).
+ */
+function extractTeamKeywords(override) {
+  return String(override)
+    .split(/\s+(?:vs\.?|ver\.?|v\.?|ضد|مع)\s+|\s+[-–—]\s+/i)
+    .map((side) => side.trim())
+    .filter(Boolean)
+    .map((side) => {
+      const words = side.split(/\s+/).filter((w) => /^[A-Za-z\u0600-\u06FF]/.test(w));
+      return words[words.length - 1] || side;
+    })
+    .filter((w) => w && w.length >= 3)
+    .slice(0, 2);
 }
 
 /**
@@ -530,8 +618,7 @@ export async function fetchNewsContext(type, opts = {}) {
   const override = (opts.topicOverride || '').trim();
 
   if (override) {
-    // Try to attach the REAL live fixture when the user names a match —
-    // accurate score + recap instead of the model guessing.
+    // 1) Real fixture from ESPN's scoreboard — when its API is reachable.
     const found = await findMatchForTopic(override);
     if (found) {
       // Attach the freshest article about that exact matchup (summary + photo).
@@ -539,9 +626,30 @@ export async function fetchNewsContext(type, opts = {}) {
       if (art) {
         found.recap = art.description || found.recap;
         found.articleImage = art.image || null;
+        found.articleImages = art.images || [];
         found.articleUrl = art.url || '';
       }
       return found;
+    }
+    // 2) ESPN unreachable (403s on many networks, incl. some runners) — fall
+    //    back to the freshest real article about this matchup instead of
+    //    letting the model guess.
+    const names = extractTeamKeywords(override);
+    const art = names.length ? await fetchMatchArticle('', names) : null;
+    if (art) {
+      console.log(`🎯 Topic override (no ESPN) → fresh article: ${art.title.slice(0, 70)}...`);
+      return {
+        topic: art.title,
+        matchUp: names.join(' '),
+        homeName: names[0] || '',
+        awayName: names[1] || '',
+        header: art.scoreHeader || `📰 ${art.title}`,
+        recap: art.description || '',
+        articleImage: art.image || null,
+        articleImages: art.images || [],
+        articleUrl: art.url || '',
+        summary: '',
+      };
     }
     console.log(`🎯 Topic override (no live fixture found): "${override}"`);
     return { topic: override, header: `🚨 ${override}`, recap: '', summary: '' };
@@ -553,13 +661,14 @@ export async function fetchNewsContext(type, opts = {}) {
     if (live) {
       // For news posts about a just-finished/live match, attach the FRESHEST
       // article about that exact matchup: its summary (feeds the caption) and
-      // its own photo (feeds the image) — real, current, from the game played
+      // its own photos (feed the image) — real, current, from the game played
       // recently, not a dated generic stock shot.
       if (type === 'news') {
         const art = await fetchMatchArticle(live.matchUp, [live.homeName, live.awayName]);
         if (art) {
           live.recap = art.description || live.recap;
           live.articleImage = art.image || null;
+          live.articleImages = art.images || [];
           live.articleUrl = art.url || '';
         }
       }
@@ -572,8 +681,8 @@ export async function fetchNewsContext(type, opts = {}) {
   if (type === 'news') {
     const headlines = await fetchTrendingHeadlines();
     if (headlines.length) {
-      // Pick one story, then enrich it with the article's own summary + photo.
-      const item = pickRandom(headlines);
+      // Pick one story, then enrich it with the article's own summary + photos.
+      const item = pickRandom(headlines.slice(0, 5));
       const article = await enrichArticle(item);
       console.log(`📰 Trending headline picked: ${article.title} (${article.source || 'feed'})`);
       if (article.description) {
@@ -583,16 +692,17 @@ export async function fetchNewsContext(type, opts = {}) {
       }
       return {
         topic: article.title,
-        header: `📰 ${article.title}`,
+        header: article.scoreHeader || `📰 ${article.title}`,
         recap: article.description || '',
-        articleImage: article.image || null,
+        articleImage: (article.images || [])[0] || null,
+        articleImages: article.images || [],
         articleUrl: article.url || '',
         source: article.source || '',
       };
     }
 
     throw new Error(
-      `No current match data from ESPN and no trending headline available right now. ` +
+      `No current match data and no fresh article available right now. ` +
       `Try again later, or run with a specific --topic.`
     );
   }

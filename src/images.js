@@ -173,7 +173,20 @@ async function isValidImageUrl(url) {
       });
       if (!res.ok) continue;
       const ct = res.headers.get('content-type') || '';
-      if (ct.startsWith('image/')) return true;
+      if (!ct.startsWith('image/')) continue;
+      // Compute the full size: content-range total, else content-length.
+      let size = NaN;
+      const cr = res.headers.get('content-range'); // e.g. "bytes 0-2047/123456"
+      const crMatch = cr && cr.match(/\/(\d+)$/);
+      if (crMatch) {
+        size = Number(crMatch[1]);
+      } else {
+        const cl = Number(res.headers.get('content-length'));
+        if (Number.isFinite(cl) && cl > 0) size = cl;
+      }
+      // Reject tiny files (icons, avatars, logos) when we know the size.
+      if (Number.isFinite(size) && size > 0 && size < 12000) continue;
+      return true;
     } catch (err) {
       /* try the next method */
     }
@@ -188,14 +201,23 @@ async function isValidImageUrl(url) {
  * Returns { imageUrl } or { imageUrl: null } if none found.
  */
 export async function pickImageForContent(type, ctx) {
-  // 1) Prefer the REAL photo from the article itself (og:image / feed image)
-  //    so news posts carry the actual news photo, not a generic stock shot.
-  if (ctx?.articleImage && /^https:\/\//i.test(ctx.articleImage)) {
-    if (await isValidImageUrl(ctx.articleImage)) {
-      console.log(`🖼️  Image URL (from article): ${ctx.articleImage}`);
-      return { imageUrl: ctx.articleImage };
+  // 1) Prefer the REAL photos from the article itself (og:image / JSON-LD —
+  //    usually the actual match photo, not a generic stock shot).
+  const articleCandidates =
+    Array.isArray(ctx?.articleImages) && ctx.articleImages.length
+      ? ctx.articleImages
+      : ctx?.articleImage
+        ? [ctx.articleImage]
+        : [];
+  for (const url of articleCandidates) {
+    if (!/^https:\/\//i.test(url)) continue;
+    if (await isValidImageUrl(url)) {
+      console.log(`🖼️  Image URL (from article): ${url}`);
+      return { imageUrl: url };
     }
-    console.log('⚠️  Article image not fetchable — falling back to real stock photos.');
+  }
+  if (articleCandidates.length) {
+    console.log(`⚠️  ${articleCandidates.length} article image(s) not fetchable — trying real stock photos.`);
   }
 
   // 2) Stock search: real CC photos from Flickr/Wikimedia etc. — never AI art.
