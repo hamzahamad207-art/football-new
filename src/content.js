@@ -1,6 +1,6 @@
-// Content generator — picks a topic (a fresh BBC Arabic headline for "news",
-// otherwise a canned topic) and writes Khaleeji Arabic post text via an
-// OpenAI-compatible chat-completions API.
+// Content generator — picks a topic (the newest live/results headline for
+// "news", otherwise a canned topic) and writes Khaleeji Arabic post text via
+// an OpenAI-compatible chat-completions API.
 //
 // Uses these env vars (all required for LLM, set in GitHub Secrets):
 //   LLM_API_KEY   — your Z.ai API key (https://z.ai → API Keys)
@@ -15,9 +15,6 @@ import { TEMPLATES, FALLBACK_TOPICS, LEAGUES, pickRandom } from './templates.js'
 const DEFAULT_BASE_URL = 'https://api.z.ai/api/paas/v4';
 const DEFAULT_MODEL = 'glm-4.7-flash';
 
-// Free Arabic football headlines — BBC Arabic sport RSS, no API key needed.
-const BBC_ARABIC_RSS = 'https://feeds.bbci.co.uk/arabic/sport/rss.xml';
-
 // Live / recent / upcoming match data — ESPN's public scoreboard API (no key).
 const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
 const ESPN_LEAGUES = [
@@ -26,23 +23,22 @@ const ESPN_LEAGUES = [
 ];
 
 // Trending-headline sources — authentic football outlets, no API keys needed.
-// ESPN's news endpoint is excluded: their API 403s from many IPs (incl. some
-// GitHub runners), and Sky/BBC/Google already cover the same ground reliably.
-// All feeds are fetched in parallel and the newest unique titles win.
+// BBC Arabic is deliberately NOT here: its feed carries general/politics news,
+// not sports, so including it risks non-football posts.
 const NEWS_FEEDS = {
   'BBC Sport': { kind: 'rss', url: 'https://feeds.bbci.co.uk/sport/football/rss.xml' },
   'Sky Sports': { kind: 'rss', url: 'https://www.skysports.com/rss/12040' },
-  'BBC Arabic': { kind: 'rss', url: BBC_ARABIC_RSS },
   'Google News': {
     kind: 'rss',
     url: 'https://news.google.com/rss/search?q=football+results&hl=en-GB&gl=GB&ceid=GB:en',
   },
 };
 
-// The Google News aggregator also surfaces non-soccer items ("American
-// football", other sports). Filter its items to football vocabulary only.
+// Aggregators also surface non-soccer items (politics, "American football",
+// other sports). Filter each title to football vocabulary only, with both
+// English and Arabic teams (e.g. "دوري", "مباراة", "فريق").
 const FOOTBALL_RE =
-  /football|soccer|premier\s*league|champions\s*league|europa\s*league|la\s*liga|laliga|bundesliga|serie\s*a\s?|ligue\s*1|world\s*cup|derby|transfer|sign(?:ing|ed)|goal|match|league|cup|manager|striker|midfielder|defender|goalkeep|coach|ronaldo|messi|mbappe|haaland|salah|barcelona|real\s*madrid|man(?:chester|\.?\s?u|\.?\s?c|.?u|.?c|utd|city)|arsenal|liverpool|chelsea|bayern|psg|juventus|milan|inter|tottenham|newcastle|aston\s*villa|sevilla|atletico|napoli|dortmund/i;
+  /football|soccer|premier\s*league|champions\s*league|europa\s*league|la\s*liga|laliga|bundesliga|serie\s*a\s?|ligue\s*1|world\s*cup|derby|transfer|sign(?:ing|ed)|goal|match|league|cup|manager|striker|midfielder|defender|goalkeep|coach|ronaldo|messi|mbappe|haaland|salah|barcelona|real\s*madrid|man(?:chester|\.?\s?u|\.?\s?c|.?u|.?c|utd|city)|arsenal|liverpool|chelsea|bayern|psg|juventus|milan|inter|tottenham|newcastle|aston\s*villa|sevilla|atletico|napoli|dortmund|دوري|مباراة|كرة|فريق|هداف|لاعب|نادي|ملعب|برشلونة|ريال|ليغا|بريميرليج|الهلال|النصر|الأهلي|الاتحاد|ليفربول|مانشستر|تشيلسي|أرسنال|ميسي|رونالدو|مبابي|صلاح|هالاند|انتصار|فوز|تعادل|هزيمة/i;
 
 function llmConfig() {
   const apiKey = process.env.LLM_API_KEY;
@@ -274,8 +270,9 @@ async function fetchTrendingHeadlines() {
     for (const it of items) {
       // Only the genuinely latest: drop items without a date or older than 24h.
       if (!Number.isFinite(it.date) || now - it.date > 24 * 3600e3) continue;
-      // Google News aggregates everything — only keep football-flavoured items.
-      if (name === 'Google News' && !FOOTBALL_RE.test(it.title)) continue;
+      // Defensive football-vocab check on EVERY source so a stray non-football
+      // headline (politics, war, economy…) can never become a post.
+      if (!FOOTBALL_RE.test(it.title)) continue;
       const key = it.title
         .toLowerCase()
         .replace(/[^a-z0-9\u0600-\u06FF\s]/g, '')
