@@ -25,6 +25,25 @@ const ESPN_LEAGUES = [
   'uefa.champions', 'uefa.europa',
 ];
 
+// Trending-headline sources — authentic football outlets, no API keys needed.
+// ESPN exposes a news JSON endpoint; Sky/BBC/Google News are RSS feeds. All
+// are fetched in parallel and the newest unique titles win.
+const NEWS_FEEDS = {
+  ESPN: { kind: 'json', url: 'https://site.api.espn.com/apis/site/v2/sports/soccer/news' },
+  'Sky Sports': { kind: 'rss', url: 'https://www.skysports.com/rss/12040' },
+  'BBC Sport': { kind: 'rss', url: 'https://feeds.bbci.co.uk/sport/football/rss.xml' },
+  'Google News': {
+    kind: 'rss',
+    url: 'https://news.google.com/rss/search?q=football&hl=en-GB&gl=GB&ceid=GB:en',
+  },
+  'BBC Arabic': { kind: 'rss', url: BBC_ARABIC_RSS },
+};
+
+// The Google News aggregator also surfaces non-soccer items ("American
+// football", other sports). Filter its items to football vocabulary only.
+const FOOTBALL_RE =
+  /football|soccer|premier\s*league|champions\s*league|europa\s*league|la\s*liga|laliga|bundesliga|serie\s*a\s?|ligue\s*1|world\s*cup|derby|transfer|sign(?:ing|ed)|goal|match|league|cup|manager|striker|midfielder|defender|goalkeep|coach|ronaldo|messi|mbappe|haaland|salah|barcelona|real\s*madrid|man(?:chester|\.?\s?u|\.?\s?c|.?u|.?c|utd|city)|arsenal|liverpool|chelsea|bayern|psg|juventus|milan|inter|tottenham|newcastle|aston\s*villa|sevilla|atletico|napoli|dortmund/i;
+
 function llmConfig() {
   const apiKey = process.env.LLM_API_KEY;
   const baseUrl = process.env.LLM_BASE_URL || DEFAULT_BASE_URL;
@@ -38,43 +57,115 @@ function llmConfig() {
   return { apiKey, baseUrl, model };
 }
 
-/**
- * Fetch the latest Arabic football headlines from BBC Arabic's RSS feed so
- * "news" posts are actually fresh. Returns [] on any error (offline, changed
- * feed format, etc.) — the caller then falls back to canned topics.
- */
-async function fetchFreshHeadlines() {
-  try {
-    const res = await fetch(BBC_ARABIC_RSS, {
-      headers: {
-        Accept: 'application/rss+xml, application/xml, text/xml, */*',
-        'User-Agent': 'TouchlineARBot/2.0 (Threads football page)',
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw new Error(`RSS HTTP ${res.status}`);
+/** Strip XML/CDATA/entities noise out of an RSS title. */
+function cleanXmlTitle(raw) {
+  return String(raw)
+    .replace(/<!\[CDATA\[|\]\]>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-    const xml = await res.text();
-    const titles = [];
-    const itemRe = /<item>([\s\S]*?)<\/item>/gi;
-    const titleRe = /<title>([\s\S]*?)<\/title>/i;
-    let m;
-    while ((m = itemRe.exec(xml)) !== null && titles.length < 12) {
-      const t = titleRe.exec(m[1]);
-      if (t && t[1]) {
-        const clean = t[1]
-          .replace(/<!\[CDATA\[|\]\]>/g, '')
-          .replace(/<[^>]+>/g, '')
-          .replace(/\s+/g, ' ')
-          .trim();
-        if (clean) titles.push(clean);
-      }
-    }
-    return titles;
-  } catch (err) {
-    console.warn(`⚠️  Could not fetch fresh headlines (${err.message}). Using a canned topic.`);
-    return [];
+/** Normalize to a seconds or ms epoch timestamp, else -Infinity. */
+function toEpoch(v) {
+  if (!v) return -Infinity;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : -Infinity;
+}
+
+/** Fetch + parse an RSS feed into [{ title, date }] (date=-Infinity if unset). */
+async function fetchRssItems(url) {
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/rss+xml, application/xml, text/xml, */*',
+      'User-Agent': 'TouchlineARBot/2.0 (Threads football page)',
+    },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) throw new Error(`RSS HTTP ${res.status}`);
+
+  const xml = await res.text();
+  const items = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/gi;
+  const titleRe = /<title>([\s\S]*?)<\/title>/i;
+  const dateRe = /<pubDate>([\s\S]*?)<\/pubDate>/i;
+  let m;
+  while ((m = itemRe.exec(xml)) !== null) {
+    const t = titleRe.exec(m[1]);
+    if (!t || !t[1]) continue;
+    const title = cleanXmlTitle(t[1]);
+    if (!title) continue;
+    const d = dateRe.exec(m[1]);
+    items.push({ title, date: d && d[1] ? Date.parse(d[1]) : -Infinity });
   }
+  return items;
+}
+
+/** Fetch ESPN's soccer news JSON into [{ title, date }]. */
+async function fetchEspnNews(url) {
+  const res = await fetch(url, {
+    headers: { Accept: 'application/json', 'User-Agent': 'TouchlineARBot/2.0' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!res.ok) throw new Error(`ESPN news HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.articles || [])
+    .map((a) => ({ title: cleanXmlTitle(a.headline || a.description || ''), date: toEpoch(a.published) }))
+    .filter((a) => a.title);
+}
+
+/**
+ * Fetch the most trending/latest football headlines from authentic outlets
+ * (ESPN, Sky Sports, BBC Sport, BBC Arabic + the Google News aggregator) in
+ * parallel. Dedupes by normalized title and returns the newest unique titles,
+ * newest first. Returns [] on total failure — the caller then fails cleanly
+ * instead of posting stale/guessed material.
+ */
+async function fetchTrendingHeadlines() {
+  const settled = await Promise.allSettled(
+    Object.entries(NEWS_FEEDS).map(async ([name, feed]) => {
+      const items =
+        feed.kind === 'json' ? await fetchEspnNews(feed.url) : await fetchRssItems(feed.url);
+      return { name, items };
+    })
+  );
+
+  const seen = new Set();
+  const all = [];
+  for (const r of settled) {
+    if (r.status !== 'fulfilled') {
+      console.warn(`⚠️  News feed failed: ${r.reason?.message?.slice(0, 80) || 'unknown'}`);
+      continue;
+    }
+    const { name, items } = r.value;
+    for (const it of items) {
+      // Google News aggregates everything — only keep football-flavoured items.
+      if (name === 'Google News' && !FOOTBALL_RE.test(it.title)) continue;
+      const key = it.title
+        .toLowerCase()
+        .replace(/[^a-z0-9\u0600-\u06FF\s]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      all.push({ title: it.title, date: it.date, source: name });
+    }
+  }
+
+  // Truly latest first.
+  all.sort((a, b) => b.date - a.date);
+
+  const top = all.slice(0, 12).map((it) => it.title);
+  if (top.length) {
+    console.log(
+      `🌐 Trending headlines: ${top.length} newest unique items ` +
+        `(sources: ${[...new Set(all.slice(0, 12).map((i) => i.source))].join(', ')})`
+    );
+  }
+  return top;
 }
 
 /**
@@ -275,16 +366,16 @@ export async function fetchNewsContext(type, opts = {}) {
   }
 
   if (type === 'news') {
-    const headlines = await fetchFreshHeadlines();
+    const headlines = await fetchTrendingHeadlines();
     if (headlines.length) {
       const topic = pickRandom(headlines);
-      console.log(`📰 Fresh headline (BBC Arabic): ${topic}`);
+      console.log(`📰 Trending headline picked: ${topic}`);
       return { topic, header: `📰 ${topic}`, recap: '', summary: '' };
     }
 
     throw new Error(
-      `No current match data from ESPN and no fresh BBC Arabic headline available ` +
-      `right now. Try again later, or run with a specific --topic.`
+      `No current match data from ESPN and no trending headline available right now. ` +
+      `Try again later, or run with a specific --topic.`
     );
   }
 
