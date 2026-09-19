@@ -459,26 +459,38 @@ async function fetchMatchArticle(matchUp, teamNames) {
         const lower = it.title.toLowerCase();
         return lowerNames.some((n) => n && lower.includes(n));
       })
+      // Drop pre-match noise: previews, predictions, betting/odds, how-to-watch.
+      .filter(
+        (it) =>
+          !/(prediction|betting|tips?|odds|preview|how to watch|stream|kick-?off|build-?up|predicted lineup|время)/i.test(
+            it.title
+          )
+      )
       .sort((a, b) => b.date - a.date);
 
     if (!candidates.length) return null;
 
-    // Enrich the top few candidates; prefer the one with a real article
-    // summary (Google News sometimes returns boilerplate text) and a scoreline.
+    // Enrich the top few candidates; a real scoreline in the title is the
+    // strongest signal (post-match result), then a real article summary
+    // (Google News sometimes returns boilerplate text instead).
     const genericRe = /comprehensive up-to-date|google news|powered by|coverage of/i;
     const enrichedList = await Promise.all(candidates.slice(0, 3).map((c) => enrichArticle(c)));
     const best =
+      enrichedList.find((e) => e.scoreHeader) ||
       enrichedList.find(
         (e) => (e.description || '').length >= 60 && !genericRe.test(e.description)
       ) ||
-      enrichedList.find((e) => e.scoreHeader) ||
       enrichedList[0];
+
+    // Never feed boilerplate summaries to the caption model.
+    const description =
+      best.description && genericRe.test(best.description) ? '' : best.description || '';
 
     console.log(`🗞️ Fresh article about this match (${best.title.slice(0, 80)}...)`);
 
     return {
       title: best.title,
-      description: best.description || '',
+      description,
       images: best.images || [],
       image: (best.images || [])[0] || '',
       url: best.url || '',
