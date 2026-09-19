@@ -219,7 +219,10 @@ async function fetchTrendingHeadlines() {
       continue;
     }
     const { name, items } = r.value;
+    const now = Date.now();
     for (const it of items) {
+      // Only the genuinely latest: drop items without a date or older than 24h.
+      if (!Number.isFinite(it.date) || now - it.date > 24 * 3600e3) continue;
       // Google News aggregates everything — only keep football-flavoured items.
       if (name === 'Google News' && !FOOTBALL_RE.test(it.title)) continue;
       const key = it.title
@@ -284,6 +287,7 @@ async function fetchCurrentMatches() {
             : '';
         out.push({
           league,
+          id: ev.id,
           label,
           homeName: home?.team?.displayName || '',
           awayName: away?.team?.displayName || '',
@@ -345,13 +349,97 @@ function resultArabic(m) {
 }
 
 /**
- * Turn a raw ESPN match + tag into the {topic, header, matchUp, summary, recap}
- * context used by all templates. `header` is a deterministic TouchlineX-style
- * line (LIVE/FT/NEXT) the model must copy verbatim — it can't invent a score
- * or a different match. `recap` carries the API recap sentence (real info,
- * optional flavor) the model may paraphrase but never exceed.
+ * Pull the REAL facts of a finished/live match from ESPN's play-by-play
+ * summary: goals + scorers with minutes + venue. This is what makes a post
+ * interesting ("Salah 23', Díaz 66' at Anfield") instead of "the game ended,
+ * what do you think?". Returns '' when unavailable.
  */
-function annotateMatch(m, tag) {
+async function fetchMatchFacts(m) {
+  if (!m?.id || !m?.league) return '';
+  try {
+    const url = `${ESPN_SCOREBOARD}/${m.league}/summary?event=${m.id}`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'TouchlineARBot/2.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+
+    const scorers = [];
+    for (const e of data.keyEvents || []) {
+      if (e.scoringPlay !== true) continue;
+      const minute = (e.clock?.displayValue || '')
+        .replace(/^0/, '')
+        .replace(/:\d+$/, '');
+      const scorer = e.athletes?.[0]?.displayName || '';
+      const team = e.team?.displayName || '';
+      scorers.push(`${scorer} ${minute ? minute + "'" : ''}${team ? ` (${team})` : ''}`.trim());
+      if (scorers.length >= 6) break;
+    }
+
+    const venue = data.header?.competitions?.[0]?.venue?.fullName || '';
+    const bits = [];
+    if (scorers.length) bits.push(`أهداف: ${scorers.join('، ')}`);
+    if (venue) bits.push(`الملعب: ${venue}`);
+    return bits.join(' · ');
+  } catch (err) {
+    return '';
+  }
+}
+
+/**
+ * Find the FRESHEST news article about a specific match (e.g. tonight's
+ * "Barcelona vs Sevilla") via a Google News query scoped to the last ~24h and
+ * filtered to titles mentioning either team. Returns its title/summary/image —
+ * a real, current article about the game that was just played — or null.
+ */
+async function fetchMatchArticle(matchUp, teamNames) {
+  const terms = [matchUp, ...teamNames.filter(Boolean)]
+    .map((t) => `"${t}"`)
+    .join(' ');
+  if (!terms.trim()) return null;
+  const feedUrl =
+    `https://news.google.com/rss/search?q=${encodeURIComponent(terms + ' soccer football')}` +
+    `&hl=en-GB&gl=GB&ceid=GB:en`;
+
+  try {
+    const items = await fetchRssItems(feedUrl);
+    const now = Date.now();
+    const lowerNames = teamNames.filter(Boolean).map((t) => t.toLowerCase());
+
+    const fresh = items
+      .filter((it) => Number.isFinite(it.date) && now - it.date < 26 * 3600e3)
+      .filter((it) => {
+        const lower = it.title.toLowerCase();
+        return lowerNames.some((n) => n && lower.includes(n));
+      })
+      .sort((a, b) => b.date - a.date);
+
+    if (!fresh.length) return null;
+    const best = fresh[0];
+    let image = best.image || '';
+    if (!image) image = (await enrichArticle(best)).image || '';
+
+    console.log(`🗞️ Fresh article about this match (${best.title.slice(0, 80)}...)`);
+    return {
+      title: best.title,
+      description: best.description || '',
+      image,
+      url: best.url || '',
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Turn a raw ESPN match + tag into the {topic, header, matchUp, facts, recap,
+ * summary} context used by all templates. `header` is a deterministic
+ * TouchlineX-style line (LIVE/FT/NEXT) the model must copy verbatim — it can't
+ * invent a score or a different match. `facts` holds real on-pitch detail
+ * (scorers/minutes/venue), `recap` the API recap sentence.
+ */
+async function annotateMatch(m, tag) {
   const matchUp = `${m.awayName || ''} ${m.homeName || ''}`.trim() || m.label;
   const hs = m.score ? m.score.split(' - ')[0] : '?';
   const as = m.score ? m.score.split(' - ')[1] : '?';
@@ -366,10 +454,15 @@ function annotateMatch(m, tag) {
     header = `NEXT: ${m.label}`;
   }
 
+  const facts = tag === 'live' || tag === 'recent' ? await fetchMatchFacts(m) : '';
+
   return {
     topic: m.label,
     matchUp,
+    homeName: m.homeName,
+    awayName: m.awayName,
     header,
+    facts,
     recap: m.summary || '',
     summary: resultArabic(m),
   };
@@ -388,7 +481,7 @@ async function getLiveMatchContext() {
     if (pick.tag === 'live') console.log(`🔴 Live match: ${m.label} ${m.score} (${m.detail})`);
     if (pick.tag === 'recent') console.log(`📰 Latest result: ${m.label} ${m.score}`);
     if (pick.tag === 'upcoming') console.log(`📅 Next match: ${m.label}`);
-    return annotateMatch(m, pick.tag);
+    return await annotateMatch(m, pick.tag);
   } catch (err) {
     console.warn(`⚠️  Could not fetch live matches (${err.message}).`);
     return null;
@@ -416,7 +509,7 @@ async function findMatchForTopic(override) {
     if (!hit) return null;
     const tag = hit.state === 'in' ? 'live' : hit.state === 'post' ? 'recent' : 'upcoming';
     console.log(`🎯 Topic matched a live fixture → ${tag}`);
-    return annotateMatch(hit, tag);
+    return await annotateMatch(hit, tag);
   } catch (err) {
     console.warn(`⚠️  Could not search matches for topic (${err.message}).`);
     return null;
@@ -440,7 +533,16 @@ export async function fetchNewsContext(type, opts = {}) {
     // Try to attach the REAL live fixture when the user names a match —
     // accurate score + recap instead of the model guessing.
     const found = await findMatchForTopic(override);
-    if (found) return found;
+    if (found) {
+      // Attach the freshest article about that exact matchup (summary + photo).
+      const art = await fetchMatchArticle(found.matchUp, [found.homeName, found.awayName]);
+      if (art) {
+        found.recap = art.description || found.recap;
+        found.articleImage = art.image || null;
+        found.articleUrl = art.url || '';
+      }
+      return found;
+    }
     console.log(`🎯 Topic override (no live fixture found): "${override}"`);
     return { topic: override, header: `🚨 ${override}`, recap: '', summary: '' };
   }
@@ -448,7 +550,23 @@ export async function fetchNewsContext(type, opts = {}) {
   // Real-time content whenever it's available — not just for "news".
   if (type === 'news' || type === 'stats' || type === 'analysis') {
     const live = await getLiveMatchContext();
-    if (live) return live;
+    if (live) {
+      // For news posts about a just-finished/live match, attach the FRESHEST
+      // article about that exact matchup: its summary (feeds the caption) and
+      // its own photo (feeds the image) — real, current, from the game played
+      // recently, not a dated generic stock shot.
+      if (type === 'news') {
+        const art = await fetchMatchArticle(live.matchUp, [live.homeName, live.awayName]);
+        if (art) {
+          live.recap = art.description || live.recap;
+          live.articleImage = art.image || null;
+          live.articleUrl = art.url || '';
+        }
+      }
+      if (live.facts) console.log(`⚽ Match facts: ${live.facts.slice(0, 160)}${live.facts.length > 160 ? '…' : ''}`);
+      if (live.articleImage) console.log(`🗞️ Article photo attached for this match.`);
+      return live;
+    }
   }
 
   if (type === 'news') {
