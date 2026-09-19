@@ -1,0 +1,15 @@
+# Secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+
+# Local temp files
+.tmp-*
+
+# Logs / OS junk
+*.log
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/

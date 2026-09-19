@@ -1,0 +1,71 @@
+name: The Touchline AR — Post to Threads
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_type:
+        description: 'Content type'
+        required: false
+        default: 'random'
+        type: choice
+        options:
+          - random
+          - news
+          - stats
+          - analysis
+          - meme
+          - throwback
+          - fact
+          - quote
+      topic:
+        description: 'Topic in Arabic or English (e.g. "Barça vs Sevilla" / "محمد صلاح"). Blank = auto-picked.'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Preview only (do NOT publish). Leave checked for a safe test.'
+        required: false
+        default: true
+        type: boolean
+  # ── Optional auto-posting ───────────────────────────────────────────────
+  # Uncomment the schedule block below to post automatically. Scheduled runs
+  # ALWAYS post for real (the dry_run checkbox only applies to manual runs).
+  # schedule:
+  #   - cron: '0 */6 * * *'   # every 6 hours → 4 posts/day
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-to-threads
+  cancel-in-progress: false
+
+jobs:
+  post:
+    name: Generate & publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate post + image, publish to Threads
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          BOT_TOPIC: ${{ inputs.topic }}
+        run: |
+          # Manual runs: honor the dry_run checkbox.
+          # Scheduled runs (no inputs → DRY is empty): post for real.
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            MODE="--dry-run"
+          else
+            MODE="--post"
+          fi
+          node src/index.js --type "${{ inputs.content_type || 'random' }}" $MODE

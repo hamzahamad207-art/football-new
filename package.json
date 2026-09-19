@@ -1,0 +1,20 @@
+{
+  "name": "touchline-arabic-bot",
+  "version": "2.0.0",
+  "description": "Arabic (Khaleeji) soccer bot for Threads — like @TouchlineX but in Arabic.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dry-run": "node src/index.js --dry-run",
+    "post:news": "node src/index.js --type news",
+    "post:stats": "node src/index.js --type stats",
+    "post:analysis": "node src/index.js --type analysis",
+    "post:meme": "node src/index.js --type meme",
+    "post:throwback": "node src/index.js --type throwback",
+    "post:random": "node src/index.js --type random"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
