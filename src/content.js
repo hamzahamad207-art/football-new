@@ -30,7 +30,7 @@ const NEWS_FEEDS = {
   'Sky Sports': { kind: 'rss', url: 'https://www.skysports.com/rss/12040' },
   'Google News': {
     kind: 'rss',
-    url: 'https://news.google.com/rss/search?q=football+results&hl=en-GB&gl=GB&ceid=GB:en',
+    url: 'https://news.google.com/rss/search?q=soccer+results&hl=en-GB&gl=GB&ceid=GB:en',
   },
 };
 
@@ -39,6 +39,12 @@ const NEWS_FEEDS = {
 // English and Arabic teams (e.g. "دوري", "مباراة", "فريق").
 const FOOTBALL_RE =
   /football|soccer|premier\s*league|champions\s*league|europa\s*league|la\s*liga|laliga|bundesliga|serie\s*a\s?|ligue\s*1|world\s*cup|derby|transfer|sign(?:ing|ed)|goal|match|league|cup|manager|striker|midfielder|defender|goalkeep|coach|ronaldo|messi|mbappe|haaland|salah|barcelona|real\s*madrid|man(?:chester|\.?\s?u|\.?\s?c|.?u|.?c|utd|city)|arsenal|liverpool|chelsea|bayern|psg|juventus|milan|inter|tottenham|newcastle|aston\s*villa|sevilla|atletico|napoli|dortmund|دوري|مباراة|كرة|فريق|هداف|لاعب|نادي|ملعب|برشلونة|ريال|ليغا|بريميرليج|الهلال|النصر|الأهلي|الاتحاد|ليفربول|مانشستر|تشيلسي|أرسنال|ميسي|رونالدو|مبابي|صلاح|هالاند|انتصار|فوز|تعادل|هزيمة/i;
+
+// American "football" is a completely different sport — kill anything that
+// smells like NFL / NCAA / SEC / US college gridiron before it can become a
+// soccer post (their headlines often still contain the word "football").
+const AMERICAN_FOOTBALL_RE =
+  /\bnfl\b|\bncaa\b|\bsec\b|\bbig ten\b|\bbig 12\b|\bpac-?12\b|\bacc\b|super bowl|college (?:football|sports)|quarterback|touchdown|offensive lineman|kick-?off (?:time|times)?|american football|texas a&m|kentucky|alabama|ohio state|georgia bulldogs|clemson|auburn|notre dame|cfb playoff/i;
 
 function llmConfig() {
   const apiKey = process.env.LLM_API_KEY;
@@ -270,9 +276,15 @@ async function fetchTrendingHeadlines() {
     for (const it of items) {
       // Only the genuinely latest: drop items without a date or older than 24h.
       if (!Number.isFinite(it.date) || now - it.date > 24 * 3600e3) continue;
-      // Defensive football-vocab check on EVERY source so a stray non-football
-      // headline (politics, war, economy…) can never become a post.
-      if (!FOOTBALL_RE.test(it.title)) continue;
+      // BBC/Sky are football-scoped feeds — trust them (only drop gridiron).
+      // Google News is a general aggregator: require football vocab and block
+      // American-football stories, so politics/college gridiron can never
+      // become a soccer post.
+      if (name === 'Google News') {
+        if (!FOOTBALL_RE.test(it.title) || AMERICAN_FOOTBALL_RE.test(it.title)) continue;
+      } else if (AMERICAN_FOOTBALL_RE.test(it.title)) {
+        continue;
+      }
       const key = it.title
         .toLowerCase()
         .replace(/[^a-z0-9\u0600-\u06FF\s]/g, '')
@@ -462,11 +474,14 @@ async function fetchMatchArticle(matchUp, teamNames) {
         const lower = it.title.toLowerCase();
         return lowerNames.some((n) => n && lower.includes(n));
       })
-      // Drop pre-match noise: previews, predictions, betting/odds, how-to-watch.
+      // Drop pre-match noise: previews, predictions, betting/odds, how-to-watch,
+      // plus anything that smells like American gridiron.
       .filter(
         (it) =>
-          !/(prediction|betting|tips?|odds|preview|how to watch|stream|kick-?off|build-?up|predicted lineup|время)/i.test(
-            it.title
+          !(
+            /(prediction|betting|tips?|odds|preview|how to watch|stream|kick-?off|build-?up|predicted lineup|время)/i.test(
+              it.title
+            ) || AMERICAN_FOOTBALL_RE.test(it.title)
           )
       )
       .sort((a, b) => b.date - a.date);
