@@ -6,12 +6,11 @@
 // can download. Arabic-only topic text is translated to a short English
 // query via a keyword table (Arabic keywords return poor Openverse results).
 //
-// Image picking is layered so a post almost never ships without a photo:
-//   1. match-specific query (both team names) for "news" runs,
-//   2. the content-type base query,
-//   3. a generic football query,
-// and every candidate URL is validated as a directly-fetchable image file
-// before it's accepted (Threads can't download HTML pages).
+// Variety & reliability:
+//   - candidates are shuffled (so the same photo isn't picked every run),
+//   - known off-topic photos (e.g. the "green mascot man") are blacklisted,
+//   - every candidate URL is validated as a directly-fetchable image file,
+//   - several queries are tried before giving up.
 
 const BASE_QUERIES = {
   news: 'football soccer match action photo',
@@ -22,6 +21,10 @@ const BASE_QUERIES = {
   fact: 'football stadium crowd atmosphere',
   quote: 'football legend black and white portrait',
 };
+
+// Flickr photo IDs that Openverse keeps ranking for broad "football" queries
+// but are off-topic (green mascot man in a stadium, etc.).
+const BLOCKED_IDS = new Set(['4071294803']);
 
 // Common Arabic football terms → English. Longer/more specific phrases come
 // first so replaceAll() prefers the best match ("رونالدينيو" before "رونالدو").
@@ -87,6 +90,27 @@ function buildImageQuery(type, ctx) {
   return latin ? `${base} ${latin}` : base;
 }
 
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** Extract a Flickr photo id from a URL, if present. */
+function flickrId(url) {
+  const m = url.match(/\/(\d{6,})_[a-z0-9]+\.(?:jpg|jpeg|png|gif)/i);
+  return m ? m[1] : null;
+}
+
+/** Skip known off-topic photos (like the green mascot man). */
+function isBlocked(url) {
+  const id = flickrId(url);
+  return id ? BLOCKED_IDS.has(id) : false;
+}
+
 /**
  * Query Openverse for soccer photos matching the query.
  * Returns an array of candidate image URLs (file URLs + thumbnails, deduped).
@@ -94,7 +118,7 @@ function buildImageQuery(type, ctx) {
 export async function searchImage(query) {
   console.log(`🖼️  Openverse search: ${query}`);
 
-  const url = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=10&mature=false`;
+  const url = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=20&mature=false`;
 
   try {
     const res = await fetch(url, {
@@ -118,29 +142,19 @@ export async function searchImage(query) {
     const seen = new Set();
     const urls = [];
     for (const r of results) {
-      // r.url is the source file; r.thumbnail is a small hosted preview.
       for (const u of [r?.url, r?.thumbnail]) {
         if (typeof u === 'string' && /^https:\/\//i.test(u) && !seen.has(u)) {
           seen.add(u);
           urls.push(u);
         }
       }
-      if (urls.length >= 12) break;
+      if (urls.length >= 20) break;
     }
     return urls;
   } catch (err) {
     console.warn(`⚠️  Openverse search failed: ${err.message?.slice(0, 100)}`);
     return [];
   }
-}
-
-// Prefer CDNs that reliably serve raw image bytes (Flickr static etc.).
-function urlScore(url) {
-  if (/live\.staticflickr\.com/i.test(url)) return 0;
-  if (/staticflickr\.com/i.test(url)) return 1;
-  if (/upload\.wikimedia\.org|commons\.wikimedia/i.test(url)) return 1;
-  if (/images\.unsplash\.com|i\.ibb\.co|pixabay\.com/i.test(url)) return 2;
-  return 9;
 }
 
 /**
@@ -169,33 +183,35 @@ async function isValidImageUrl(url) {
 
 /**
  * Pick the best image for the given content type + context, trying several
- * queries and validating that the chosen URL is a real, fetchable image.
+ * queries, skipping blacklisted photos, and validating that the chosen URL is
+ * a real, fetchable image. Results are shuffled so posts vary.
  * Returns { imageUrl } or { imageUrl: null } if none found.
  */
 export async function pickImageForContent(type, ctx) {
   const queries = [];
   const primary = buildImageQuery(type, ctx);
   queries.push(primary);
-  for (const q of [BASE_QUERIES[type], 'football soccer match'] ) {
+  for (const q of [BASE_QUERIES[type], 'football soccer match', 'soccer stadium crowd']) {
     if (q && !queries.includes(q)) queries.push(q);
   }
 
   const tried = new Set();
   for (const q of queries) {
-    const urls = await searchImage(q);
-    const ranked = urls.sort((a, b) => urlScore(a) - urlScore(b));
+    let urls = (await searchImage(q)).filter((u) => !isBlocked(u));
+    if (!urls.length) {
+      console.warn(`⚠️  Query "${q}" had no usable (non-blacklisted) candidates.`);
+      continue;
+    }
+    urls = shuffle(urls);
     let checked = 0;
-    for (const url of ranked) {
+    for (const url of urls) {
       if (tried.has(url)) continue;
       tried.add(url);
       if (await isValidImageUrl(url)) {
         console.log(`🖼️  Image URL: ${url}`);
         return { imageUrl: url };
       }
-      if (++checked >= 4) break; // don't burn the whole run validating
-    }
-    if (urls.length) {
-      console.warn(`⚠️  No valid image from query "${q}".`);
+      if (++checked >= 6) break; // don't burn the whole run validating
     }
   }
 
