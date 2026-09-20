@@ -24,8 +24,16 @@ const BASE_QUERIES = {
 };
 
 // Flickr photo IDs that Openverse keeps ranking for broad "football" queries
-// but are off-topic (green mascot man in a stadium, etc.).
+// but are off-topic (green mascot man in a stadium, American football games,
+// etc.). These are checked against BOTH the full image URL AND the Openverse
+// thumbnail proxy URL (which is NOT a Flickr URL, so flickrId() alone won't
+// catch them).
 const BLOCKED_IDS = new Set(['4071294803']);
+// Openverse API UUIDs for the same blocked records — thumbnails use this
+// format: api.openverse.org/v1/images/<uuid>/thumb/
+const BLOCKED_UUIDS = new Set([
+  '81193339-07e3-41e7-a688-9ac0ae7497d2', // green mascot man (Jets-Dolphin game)
+]);
 
 // Common Arabic football terms → English. Longer/more specific phrases come
 // first so replaceAll() prefers the best match ("رونالدينيو" before "رونالدو").
@@ -126,10 +134,19 @@ function flickrId(url) {
   return m ? m[1] : null;
 }
 
-/** Skip known off-topic photos (like the green mascot man). */
+/** Extract an Openverse UUID from a thumbnail proxy URL, if present. */
+function openverseId(url) {
+  const m = url.match(/\/v1\/images\/([0-9a-f-]{36})\/thumb\//i);
+  return m ? m[1] : null;
+}
+
+/** Skip known off-topic photos (green mascot man, American football games, etc.) */
 function isBlocked(url) {
-  const id = flickrId(url);
-  return id ? BLOCKED_IDS.has(id) : false;
+  const fid = flickrId(url);
+  if (fid && BLOCKED_IDS.has(fid)) return true;
+  const uid = openverseId(url);
+  if (uid && BLOCKED_UUIDS.has(uid)) return true;
+  return false;
 }
 
 /**
@@ -163,6 +180,31 @@ export async function searchImage(query) {
     const seen = new Set();
     const picks = [];
     for (const r of results) {
+      // Block the entire record if the full URL or the Openverse UUID is known
+      // off-topic — this also kills the thumbnail proxy URL that would otherwise
+      // slip past the Flickr-ID-based isBlocked check.
+      if (isBlocked(r.url) || (r.id && BLOCKED_UUIDS.has(r.id))) {
+        console.log(`   ⛔ Blocked record: ${(r.title || r.url || '').slice(0, 60)}`);
+        continue;
+      }
+      // Filter out American football results — Openverse ranks them highly for
+      // "football" queries but they're not soccer. Also skip kids/youth content
+      // that the URL-based isLikelyKidImage can't catch.
+      if (Array.isArray(r.tags)) {
+        const tagNames = r.tags.map((t) => (t.name || '').toLowerCase());
+        const isAmerican = tagNames.some((t) =>
+          /^(nfl|american football|gridiron|touchdown|quarterback|patriots|jets|dolphins|eagles|cowboys|colts|packers|bengals|browns|broncos|raiders|chargers|bills|steelers|ravens|texans|jaguars|titans|cardinals|seahawks|49ers|giants|redskins|washington|falcon|panther|saint|bear|lion|viking)/i.test(t)
+        );
+        if (isAmerican) {
+          console.log(`   ⛔ American football result skipped: ${(r.title || '').slice(0, 50)}`);
+          continue;
+        }
+        const isKids = tagNames.some((t) => /^(child|kid|youth|minor|teen|under.?1[0-9])/.test(t));
+        if (isKids) {
+          console.log(`   ⛔ Kids/youth result skipped: ${(r.title || '').slice(0, 50)}`);
+          continue;
+        }
+      }
       const width = Number.isFinite(r?.width) ? r.width : 0;
       for (const u of [r?.url, r?.thumbnail]) {
         if (typeof u === 'string' && /^https:\/\//i.test(u) && !seen.has(u)) {
