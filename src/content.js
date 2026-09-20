@@ -983,6 +983,16 @@ const ARABIC_WORDS = new Set([
   'رأي', 'راي', 'رأيك', 'رايک', 'رأيكم', 'رايكم', 'آراء', 'اراء', 'ارائه',
   'ذهول', 'ذهوله', 'ذهولهه', 'دهشة', 'دهشه', 'انبهار', 'انبهر', 'ينبهر',
   'مندهش', 'مندهشين', 'مبهر', 'مبهره',
+  // headline verbs (Arabic first-line titles for news posts)
+  'يكسب', 'يكسبها', 'يكتسح', 'يكتسحها', 'يطيح', 'يطيحه', 'يودع', 'يودّع',
+  'يودي', 'يرحل', 'يعبر', 'يعبره', 'يتأهل', 'يتاهل', 'يتقدم', 'يتقدمها',
+  'يجلد', 'يدك', 'يدكها', 'يشتعل', 'يواصل', 'يواصلها', 'يعزز', 'يعززها',
+  'ينهار', 'ينقض', 'ينقضها', 'يستقيل', 'يستقبل', 'يستقبلها', 'يصطدم',
+  'يلتحق', 'يغادر', 'يلغي', 'يلغيها', 'يلتصق', 'يجمد', 'يجمدها', 'يرتاح',
+  'يرتاحون', 'يقلبها', 'ينتشل', 'ينتشلهم', 'يعودون', 'يكمل', 'يكملها',
+  'يكملون', 'يدخل', 'يخرج', 'يخرجها', 'يتقدمون', 'ينافس', 'ينافسون',
+  'يحقق', 'يحققه', 'يحققون', 'يحققها', 'يصطاد', 'يخطفها', 'يستعيد',
+  'يستعيدون', 'يسلخ', 'يراوغ', 'يراوغها',
 ]);
 
 // Count Arabic tokens in the body that look like invented gibberish (not in
@@ -1239,6 +1249,12 @@ async function isFootballOnly(text, ctx) {
     console.warn('⚽ Guard: English/code artifact in caption body — flagged.');
     return false;
   }
+  // All-Arabic requirement: a trending news post (no typed topic) must contain
+  // no Latin characters anywhere — the whole first line is an Arabic headline.
+  if (ctx?.type === 'news' && !ctx?.topic && /[a-zA-Z]/.test(String(text))) {
+    console.warn('⚽ Guard: Latin characters in all-Arabic trending news post — flagged.');
+    return false;
+  }
   // Name-grounding: any tracked club/star/manager must come from the data.
   if (findUngroundedName(text, ctx)) return false;
   // Transliteration-grounding: unknown name-like tokens must romanize back to
@@ -1272,7 +1288,12 @@ function scorePost(text, ctx) {
   if (/\b[a-zA-Z]{2,}\b/.test(body) || /_{2,}|\{\{|\}\}|```/.test(String(text))) return -999;
   let s = 0;
   const h = (ctx?.header || '').trim();
-  if (h && String(text).startsWith(h.slice(0, Math.min(30, h.length)))) s += 6;
+  // News posts now open with an Arabic headline (📰/🚨) instead of a verbatim
+  // English title — reward that. Score/typed headers still reward matching the
+  // exact header line.
+  if (ctx?.type === 'news') {
+    if (/^[📰🚨]/.test(String(text))) s += 4;
+  } else if (h && String(text).startsWith(h.slice(0, Math.min(30, h.length)))) s += 6;
   if (/[؟?]\s*$/.test(String(text))) s += 4;
   if (/[\u{1F300}-\u{1FAFF}]/u.test(String(text))) s += 1;
   // Prefer the draw with the fewer unknown (possibly invented) Arabic tokens.
@@ -1289,6 +1310,8 @@ function scorePost(text, ctx) {
 export async function generatePostText(type, ctx) {
   const tpl = TEMPLATES[type];
   if (!tpl) throw new Error(`Unknown content type: ${type}`);
+  // Let guards/scoring know which template family we're in.
+  ctx = { ...ctx, type };
 
   console.log(`✍️  Generating ${type} post in Khaleeji Arabic...`);
 
