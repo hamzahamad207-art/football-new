@@ -717,7 +717,13 @@ export async function fetchNewsContext(type, opts = {}) {
       const rankItem = (i) => {
         const t = i.title || '';
         let s = 0;
-        if (/premier league|la liga|laliga|bundesliga|serie a|ligue 1|champions league|championship|europa/i.test(t)) s += 2;
+        if (/premier league|la liga|laliga|bundesliga|serie a|ligue 1|champions league|europa/i.test(t)) s += 2;
+        if (
+          /arsenal|chelsea|liverpool|man(?:chester| ?[cu]| utd| united| city)|tottenham|spurs|newcastle|brighton|aston villa|everton|west ham|leicester|wolves|southampton|crystal palace|fulham|brentford|forest|barcelona|real madrid|atletico|sevilla|bayern|dortmund|psg|juventus|inter|milan|napoli|roma/i.test(
+            t
+          )
+        )
+          s += 2;
         if (i.source === 'BBC Sport' || i.source === 'Sky Sports') s += 1;
         if (/wsl|women|سيدات/i.test(t)) s -= 1;
         return s;
