@@ -774,16 +774,32 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
   // endpoints — other OpenAI-compatible providers ignore unknown fields.
   if (/z\.ai|bigmodel/i.test(baseUrl)) body.thinking = { type: 'disabled' };
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60000),
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(90000),
+      });
+    } catch (err) {
+      // Network hiccup or the API taking too long — retry, same as 429s.
+      if (attempt < 3) {
+        const delay = [3000, 8000][attempt - 1] || 8000;
+        console.warn(
+          `⚠️  LLM request failed (${String(err?.message).slice(0, 60)}) — retrying in ${delay / 1000}s...`
+        );
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
