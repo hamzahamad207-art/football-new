@@ -83,6 +83,9 @@ export function prepOverlayText(text) {
       /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{2764}\u{2B50}\u{26BD}\u{2B55}\u{3030}\u{25A0}-\u{25FE}]/gu,
       ''
     )
+    // No quote marks on the image header — the model sometimes leaves a stray
+    // unmatched quote, and quotes aren't wanted in a big display headline anyway.
+    .replace(/["“”'‘’]/g, '')
     .replace(/^[\s:·•|,-]+/u, '')
     .trim();
   // Allow typed score/status headers like "FT: 3 - 1" but keep only arabic text.
@@ -200,6 +203,10 @@ export async function applyArabicOverlay(imageUrl, text) {
  * Host the composed image in this public repo (out/ folder) and return a
  * publicly-fetchable URL for Threads. Uses git push — works both on the
  * GitHub Actions runner (GITHUB_TOKEN) and locally (cached credentials).
+ *
+ * Runs push to this same repo one after another (concurrency group), so the
+ * remote `main` can advance between our checkout and our push. We therefore
+ * rebase onto origin/main before each push attempt and retry up to 4 times.
  */
 export async function pushComposedImage(file) {
   const repoSlug = process.env.GITHUB_REPOSITORY || 'hamzahamad207-art/football-new';
@@ -212,13 +219,16 @@ export async function pushComposedImage(file) {
   await fs.copyFile(file, path.join(outDir, name));
 
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
-  const git = (cmd, args) => execFileP('git', cmd, { cwd: repoRoot, env, timeout: 90000 });
+  const git = (cmd) =>
+    execFileP('git', cmd, { cwd: repoRoot, env, timeout: 120000 }).catch((e) => {
+      e.gitErr = String(e?.stderr || e?.message || e);
+      throw e;
+    });
 
-  await git(['add', `out/${name}`]);
-  let pushed = false;
-  let lastErr = '';
-  for (let attempt = 0; attempt < 3 && !pushed; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    // Make sure the image is committed (well no-op after the first attempt).
     try {
+      await git(['add', `out/${name}`]);
       await git([
         '-c', 'user.name=Touchline AR Bot',
         '-c', 'user.email=touchline-ar-bot@users.noreply.github.com',
@@ -226,23 +236,26 @@ export async function pushComposedImage(file) {
         '-m', `📸 Post image ${name}`,
         '--no-verify',
       ]);
+    } catch {
+      /* nothing new to commit — proceed to push */
+    }
+    // Fold in whatever the previous run pushed so our push isn't rejected.
+    try {
+      await git(['pull', '--rebase', 'origin', 'main']);
     } catch (e) {
-      // nothing to commit (already committed / raced) — try push anyway
+      console.warn(`   rebase note: ${String(e?.gitErr || e).slice(0, 140)}`);
     }
     try {
-      const r = await execFileP('git', ['push', 'origin', 'HEAD:main'], { cwd: repoRoot, env, timeout: 90000 });
-      pushed = true;
-      if (!r.stderr.includes('Everything up-to-date')) {
+      const r = await git(['push', 'origin', 'HEAD:main']);
+      if (!String(r?.stderr || '').includes('Everything up-to-date')) {
         console.log(`   git push → ${name}`);
       }
+      return `https://raw.githubusercontent.com/${owner}/${repo}/main/out/${name}?v=${Date.now()}`;
     } catch (e) {
-      lastErr = String(e?.stderr || e?.message || e).slice(0, 300);
-      await new Promise((r) => setTimeout(r, 3000));
+      console.warn(`   push attempt ${attempt} failed: ${String(e?.gitErr || e).slice(0, 140)}`);
+      await new Promise((r) => setTimeout(r, 2500));
     }
   }
-  if (!pushed) {
-    console.warn(`⚠️  Could not push composed image (${lastErr}) — posting original photo instead.`);
-    return null;
-  }
-  return `https://raw.githubusercontent.com/${owner}/${repo}/main/out/${name}?v=${Date.now()}`;
+  console.warn('⚠️  Could not push composed image after retries — posting original photo instead.');
+  return null;
 }
