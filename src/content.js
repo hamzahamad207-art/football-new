@@ -712,14 +712,18 @@ export async function fetchNewsContext(type, opts = {}) {
     const headlines = await fetchTrendingHeadlines();
     if (headlines.length) {
       // Pick one story, then enrich it with the article's own summary + photos.
-      // Prefer established outlets (BBC Sport, Sky Sports) over the Google
-      // aggregator, which also surfaces niche US/local roundups.
-      const preferred = headlines
-        .slice(0, 8)
-        .filter((i) => i.source === 'BBC Sport' || i.source === 'Sky Sports');
-      const item = preferred.length
-        ? pickRandom(preferred.slice(0, 4))
-        : pickRandom(headlines.slice(0, 5));
+      // Prefer major men's top-league reports (Premier League, La Liga, …)
+      // from established outlets over women's leagues / aggregator roundups.
+      const rankItem = (i) => {
+        const t = i.title || '';
+        let s = 0;
+        if (/premier league|la liga|laliga|bundesliga|serie a|ligue 1|champions league|championship|europa/i.test(t)) s += 2;
+        if (i.source === 'BBC Sport' || i.source === 'Sky Sports') s += 1;
+        if (/wsl|women|سيدات/i.test(t)) s -= 1;
+        return s;
+      };
+      const ranked = headlines.slice(0, 8).sort((a, b) => rankItem(b) - rankItem(a));
+      const item = pickRandom(ranked.slice(0, 4));
       const article = await enrichArticle(item);
       console.log(`📰 Trending headline picked: ${article.title} (${article.source || 'feed'})`);
       if (article.description) {
