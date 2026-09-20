@@ -9,14 +9,23 @@ what changed; AGENTS.md is the permanent knowledge.
 
 - **Repo**: `hamzahamad207-art/football-new` (public). Local checkout:
   `football-new-main/football-new-main/`.
-- **HEAD**: `69eb63a` — "feat: add --republish to re-post the last saved post".
-  **Working tree clean** — in sync with `origin/main` after push.
-- **Branch**: `main` (synced with `origin/main`). The next GitHub Actions run
-  picks up the new code.
-- **Re-publish feature**: every run that composes + hosts an image also saves
-  the post to `out/last-post.json`; the workflow now has a **"Re-publish the
-  last saved post"** checkbox (+ `--republish` CLI flag) that posts that exact
-  caption + image with zero regeneration (still gated by `dry_run`).
+- **HEAD**: `a056dc5` — "feat: no repeated stories, HD stock-first images,
+  faster news runs". **Working tree clean**; pushed together with this HANDOFF.
+- **Branch**: `main` (synced with `origin/main` after push). The next GitHub
+  Actions run picks up the new code.
+- **Re-publish feature (previous session, now CI-proven)**: every run that
+  composes + hosts an image saves `out/last-post.json`; the workflow's
+  **"Re-publish the last saved post"** checkbox (+ `--republish` CLI flag)
+  posts that exact caption + image with zero regeneration (still gated by
+  `dry_run`). A user dry-run since then pushed the commit
+  `ece53ed "♻️ Save last post for re-publish"` — persistence works end-to-end.
+- **This session — no repeats / HD images / faster runs**: news runs record
+  posted stories to `out/news-seen.json` (60-day window, 200 entries) and the
+  pickers skip matching headlines (exact key OR ≥2 shared entity tokens);
+  trending/rumour news prefers clean CC stock photos over article og:images
+  (often "GOSSIP"-style TV graphics); stock sources are HD-first (widest
+  first, ≥30KB floor); the 2nd caption draw is skipped when the 1st passes
+  every guard cleanly.
 - **LLM provider: OpenRouter** (`LLM_BASE_URL=https://openrouter.ai/api/v1`),
   model **`nvidia/nemotron-3-ultra-550b-a55b:free`** (Nemotron 3 Ultra, free
   tier). Secrets updated this session via `gh secret set`: `LLM_API_KEY`
@@ -40,7 +49,35 @@ what changed; AGENTS.md is the permanent knowledge.
 
 ## 2. Session Summary (what was done this session)
 
-### Latest addition — re-publish the last post (`69eb63a`)
+### Latest addition — no repeated stories, HD images, faster runs (`a056dc5`)
+
+User feedback after a test run: (1) the composed image stamped "GOSSIP" in big
+English with a small Arabic title — the trending transfer article's og:image
+was a TV graphic; (2) the same player/news (Celtic/Gineitis) kept being picked;
+(3) images should be HD; (4) runs take 7m20s — reduce if safe.
+
+- **No repeats.** Every composed news run appends its story to
+  `out/news-seen.json` (title key + ts; same commit/push as last-post.json).
+  The trending picker + match-article picker skip headlines matching an exact
+  normalized key OR sharing ≥2 significant tokens with a recent entry
+  (60-day window, 200 entries max). Manually typed topics are never recorded —
+  the user's explicit choice always wins.
+- **Clean images for trending news.** `pickImageForContent` now tries CC stock
+  photos FIRST for trending/rumour news (article-first stays for match-report
+  news, whose images are real match photos). Transfer-gossip og:images are
+  often editorial graphics with English baked in — no overlay can fix those.
+- **HD.** Openverse sources are ordered widest-first; the URL-validator floor
+  rose 12KB → 30KB; the Google-thumbnail upsize (`s0-w1200`) still applies to
+  article images. Trending headlines are reduced to their entity tokens for the
+  Openverse query ("Celtic Gineitis football soccer").
+- **Speed.** The 2nd caption draw is skipped when draw A passes every guard on
+  the first try (draw B still runs whenever A needed regens — that's exactly
+  when it helps); article-enrich timeout 10s → 6s. The reasoning model
+  (~7s/call) remains the runtime floor.
+- **Not changed**: 700ms pacing, 5-attempt 429 backoff, double-guarded draws —
+  the reliability rails stay intact.
+
+### Previous addition — re-publish the last post (`69eb63a`)
 
 User asked: "can I publish this existing post (the dry-run one I already made)
 without generating a new one?" Built a safe, additive feature:
@@ -138,6 +175,10 @@ rules.
 | **Grammar as scoring bias, not hard validator** | A full Arabic verb-agreement validator without a grammar library is unreliable. The narrow feminine-subject pattern only biases which draw wins — zero risk of false rejection. | Hard rejection regex (false-positive risk); nothing (slips survive). |
 | **OpenRouter free Nemotron 3 Ultra as writer** | User asked honestly if human-quality output is achievable and chose "free but much stronger". Tested live on a realistic Arabic grounding task: Nemotron 3 Ultra produced grounded, engaging Khaleeji copy (~7.5s) while GLM-5.2/Qwen free 429'd. `content.js` stays provider-agnostic (env overrides), so a later switch to a paid frontier model is a secrets-only change. | Staying on GLM-4.7-Flash (low quality ceiling); paid frontier (rejected for now); adding more heuristics on top of a weak writer (band-aid). |
 | **Persisted last post + `--republish`** | User wanted to publish an existing dry-run post without regenerating. Persisting the exact caption + hosted image URL (committed to `out/last-post.json` on every composed push) makes re-publishing deterministic — no re-roll of the dice. Persisted *after* the image push as a separate commit so it can never block posting. | Re-running with the same topic and hoping for the same caption (non-deterministic); manual copy-paste every time (no); a `last-post.json` written before the push (risky if the push fails). |
+| **Story-dedupe via `out/news-seen.json` (exact key OR ≥2 shared entity tokens)** | The same trending story kept being picked run after run (a Celtic/Gineitis transfer saga stays "trending" for days across multiple feeds). Recording what we posted and blocking exact-title matches *and* shared-entity repeats kills the repetition without schedules or queues. | Relying on the RSS 24h-freshness filter (proven insufficient); a user-picked topic queue (UI complexity); full fuzzy-title matching (lev-based, slower). |
+| **Trending news: stock photos before article images** | Trending transfer-rumour articles ship TV/newspaper graphics as og:image (a big "GOSSIP" banner) — English text baked in, unfixable by the overlay. Match-report news keeps article-first because those are real match photos. | Article-first with a "graphic" heuristic (no cheap reliable signal without OCR); stock-only everywhere (loses real match photos). |
+| **HD-first picking + ≥30KB floor** | User: "make the images HD." Openverse width metadata + a file-size floor push the pick toward real high-res photos cheaply, with a small start rotation for variety. | Forced dimension check by parsing image headers (more code, more failure modes); upscaling (fake HD). |
+| **Skip 2nd caption draw when draw A is clean** | The 2nd draw exists only to smooth model glitches — but guards already regen on glitches, so a guard-clean draw A has nothing to smooth. Skipping it saves the slow model call; B still runs whenever A needed a regen. | Always drawing B (slower runs — the user's complaint); dropping B entirely (loses the safety net for troubled draws). |
 
 ## 4. Tried and Rejected
 
@@ -328,8 +369,13 @@ error/symptom, why it failed, what we learned.
   stays Arabic, and free-tier 429s don't stall the run.
 - **Re-publish feature UNVERIFIED in CI** (`69eb63a`): confirm a normal dry-run
   prints "♻️ last-post.json saved", then a `--republish` dry-run reads and
-  prints the exact stored post. (First real re-publish happens later with user
-  approval.)
+  prints the exact stored post. (Partially verified since: a user run pushed
+  `ece53ed "♻️ Save last post for re-publish"`.)
+- **New feature set UNVERIFIED in CI** (`a056dc5`): confirm (a) a news dry-run
+  logs "previously-posted skipped" on a second run and writes
+  `out/news-seen.json`, (b) trending-news images come from stock (no GOSSIP
+  graphics), (c) picks are HD, (d) the "skipping second draw" fast path logs
+  and the run is visibly faster than 7m20s.
 - **SECURITY — rotate the OpenRouter key.** The user pasted the key in the chat
   transcript during this session. Once the migration is confirmed working, the
   user should rotate it at https://openrouter.ai/keys and we re-set the
@@ -337,34 +383,39 @@ error/symptom, why it failed, what we learned.
 
 ## 7. Next Steps (prioritized)
 
-1. **Run a dry-run in CI on `origin/main`** (now carries `c87857f` +
-   `6f2e370` + `69eb63a`) to validate: Nemotron captions are grounded and
-   engaging (no repeated lines, no forced questions), no false-positive regen
-   loops, OpenRouter migration works end-to-end (free-tier 429s aside), and
-   the run prints "♻️ last-post.json saved (re-publish ready)".
-2. **Test the re-publish flow**: a second dry-run with **"Re-publish the last
+1. **Run a dry-run in CI on `origin/main`** (now carries the OpenRouter +
+   republish + no-repeat/HD/faster features) to validate: Nemotron captions are
+   grounded and engaging (no repeated lines, no forced questions), no
+   false-positive regen loops, OpenRouter migration works end-to-end (free-tier
+   429s aside), the run prints "♻️ last-post.json saved (re-publish ready)",
+   and (new) the "First caption passed all guards cleanly — skipping second
+   draw" fast path shows. Check the picked image is a clean HD photo (no
+   GOSSIP-style graphics).
+2. **Run a SECOND news dry-run right after** to confirm dedupe: the same story
+   should be skipped and the log should show "previously-posted skipped".
+3. **Test the re-publish flow**: a second dry-run with **"Re-publish the last
    saved post"** checked should print the exact stored post (no generation).
    Only then, with explicit user approval, re-publish for real (`dry_run`
    unchecked).
-3. **Build the grounding upgrade** (deferred this session): feed the *full
+4. **Build the grounding upgrade** (deferred this session): feed the *full
    article body* into the news prompt (not just the recap/summary), add
    deterministic number/entity containment (every number/club/position in the
    caption must appear in the article), and optionally an LLM-as-judge verify
    pass. The model jump fixes most quality issues; this closes the rest.
-4. **Rotate the OpenRouter key** (it was pasted in chat) and re-set the
+5. **Rotate the OpenRouter key** (it was pasted in chat) and re-set the
    `LLM_API_KEY` secret.
-5. **Confirm the latest composed image** (the next fresh dry-run) — open the
+6. **Confirm the latest composed image** (the next fresh dry-run) — open the
    preview URL and verify the Arabic overlay looks correct.
-6. **Check Threads for the "Genesis" جيل زد test post** and delete it if it
+7. **Check Threads for the "Genesis" جيل زد test post** and delete it if it
    exists.
-7. **On explicit user approval** of a specific post, run the workflow with
+8. **On explicit user approval** of a specific post, run the workflow with
    `dry_run` unchecked, then confirm the post is live on Threads (also
    verifies the real publish path with the overlay).
-8. **Collect new failure samples.** Each run may surface new misspellings /
+9. **Collect new failure samples.** Each run may surface new misspellings /
    guard gaps: add them to `normalizeNames` + `NAMED_ENTITIES` / allowlists.
-9. **Flush old composed images?** `out/` grows by one image per run. Allowed,
-   but review disk/repo size periodically; optionally prune old `tl-*.jpg`.
-10. **Consider a scheduled cron** (commented out in `post.yml`) only if the
+10. **Flush old composed images?** `out/` grows by one image per run. Allowed,
+    but review disk/repo size periodically; optionally prune old `tl-*.jpg`.
+11. **Consider a scheduled cron** (commented out in `post.yml`) only if the
     user asks — for now posting is manual.
 
 ## 8. My Preferences (the user)
