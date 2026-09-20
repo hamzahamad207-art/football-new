@@ -4,7 +4,7 @@
 # What this does:
 #   1. Verifies `gh` (GitHub CLI) is installed and authenticated.
 #   2. Asks you for a repo name + visibility.
-#   3. Asks you for your Z.ai API key (for LLM Arabic text generation).
+#   3. Asks you for your OpenRouter API key (for LLM Arabic text generation).
 #   4. Asks you for your Threads token + user id (silent input).
 #   5. Creates the repo on your GitHub account (or pushes to an existing one).
 #   6. Commits + pushes all bot files.
@@ -12,7 +12,7 @@
 #   8. Triggers the first dry-run workflow.
 #
 # You never paste a GitHub PAT anywhere. The `gh` CLI uses OAuth via browser.
-# Your Z.ai key + Threads token are only ever typed in your own terminal
+# Your OpenRouter key + Threads token are only ever typed in your own terminal
 # (silent prompts) and go straight to GitHub Secrets.
 
 set -euo pipefail
@@ -98,27 +98,25 @@ if gh repo view "$GH_USER/$REPO_NAME" >/dev/null 2>&1; then
   esac
 fi
 
-# ─── 3. Z.ai LLM API key ─────────────────────────────────────────────────
-step "3/8  Z.ai API key (for Arabic text generation)"
+# ─── 3. OpenRouter API key ───────────────────────────────────────────────
+step "3/8  OpenRouter API key (for Arabic text generation)"
 
-echo "The bot uses Z.ai's public GLM-4 API (OpenAI-compatible) to generate Arabic text."
-echo "Get a free API key at: https://z.ai/  → Sign in → API Keys → Create new key"
+echo "The bot uses OpenRouter's free frontier-tier model (Nemotron 3 Ultra) to generate Arabic text."
+echo "Get a free API key at: https://openrouter.ai/keys"
 echo ""
-echo "Paste your Z.ai API key (input is hidden)."
-read -rs -p "Z.ai API key: " LLM_API_KEY; echo
+echo "Paste your OpenRouter API key (input is hidden)."
+read -rs -p "OpenRouter API key: " LLM_API_KEY; echo
 
 if [[ -z "$LLM_API_KEY" ]]; then
-  err "No Z.ai API key entered. Aborting."
-  echo "  → Sign up at https://z.ai and create an API key, then re-run this script."
+  err "No OpenRouter API key entered. Aborting."
+  echo "  → Sign up at https://openrouter.ai/keys and create a key, then re-run this script."
   exit 1
 fi
 
 echo ""
-echo "Optionally override the model (default: glm-4.5-flash, free tier)."
-echo "  Free:  glm-4.5-flash, glm-4.7-flash"
-echo "  Paid:  glm-4.6 (flagship), glm-5.3 (latest)"
-read -rp "LLM_MODEL [glm-4.5-flash]: " LLM_MODEL_INPUT
-LLM_MODEL="${LLM_MODEL_INPUT:-glm-4.5-flash}"
+echo "Optionally override the model (default: nvidia/nemotron-3-ultra-550b-a55b:free, free tier)."
+read -rp "LLM_MODEL [nvidia/nemotron-3-ultra-550b-a55b:free]: " LLM_MODEL_INPUT
+LLM_MODEL="${LLM_MODEL_INPUT:-nvidia/nemotron-3-ultra-550b-a55b:free}"
 
 log "LLM key + model captured."
 
@@ -187,12 +185,15 @@ log "Pushed to: https://github.com/$GH_USER/$REPO_NAME"
 # ─── 7. Set GitHub Secrets ────────────────────────────────────────────────
 step "7/8  Setting GitHub Secrets"
 
-# LLM_API_KEY + LLM_MODEL (set with the default so the workflow is consistent)
+# LLM_API_KEY + LLM_MODEL + LLM_BASE_URL (set with defaults so the workflow is consistent)
 printf '%s' "$LLM_API_KEY" | gh secret set LLM_API_KEY --repo "$GH_USER/$REPO_NAME"
 log "LLM_API_KEY → set"
 
 printf '%s' "$LLM_MODEL" | gh secret set LLM_MODEL --repo "$GH_USER/$REPO_NAME"
 log "LLM_MODEL → set ($LLM_MODEL)"
+
+printf '%s' "https://openrouter.ai/api/v1" | gh secret set LLM_BASE_URL --repo "$GH_USER/$REPO_NAME"
+log "LLM_BASE_URL → set (OpenRouter)"
 
 # Threads creds
 printf '%s' "$THREADS_ACCESS_TOKEN" | gh secret set THREADS_ACCESS_TOKEN --repo "$GH_USER/$REPO_NAME"
@@ -229,7 +230,7 @@ echo "────────────────────────�
 echo "✅ Deployed!  Repo:  https://github.com/$GH_USER/$REPO_NAME"
 echo ""
 echo "Secrets set:"
-echo "  • LLM_API_KEY          (your Z.ai API key)"
+echo "  • LLM_API_KEY          (your OpenRouter API key)"
 echo "  • LLM_MODEL            ($LLM_MODEL)"
 echo "  • THREADS_ACCESS_TOKEN"
 echo "  • THREADS_USER_ID"

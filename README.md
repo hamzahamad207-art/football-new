@@ -53,9 +53,9 @@ touchline-arabic-bot/
 ## Local dev — try it before posting
 
 ```bash
-# 1. Copy env template and fill in your Z.ai key
+# 1. Copy env template and fill in your OpenRouter key
 cp .env.example .env
-# Edit .env: set LLM_API_KEY=<your Z.ai key from https://z.ai>
+# Edit .env: set LLM_API_KEY=<your key from https://openrouter.ai/keys>
 
 # 2. Load env vars
 export $(grep -v '^#' .env | xargs)
@@ -83,30 +83,26 @@ You can also set the topic via the `BOT_TOPIC` env var (used by the GitHub Actio
 
 ---
 
-## Getting your Z.ai API key
+## Getting your OpenRouter API key
 
-The bot uses the Z.ai public GLM-4 API (OpenAI-compatible, free tier) to generate Arabic text.
+The bot generates Arabic text via **OpenRouter** (OpenAI-compatible), using a
+free frontier-tier model — NVIDIA Nemotron 3 Ultra — at **no cost**.
 
-1. Go to https://z.ai/ and sign in (Google or email)
-2. Open **API Keys** in the dashboard
-3. Click **Create new key**
-4. Copy the key — it'll look like `xxxxxxxx.xxxxxxxx.xxxxxxxx`
-5. Save this as a GitHub Secret named `LLM_API_KEY` (see deploy instructions below)
+1. Go to https://openrouter.ai/keys and create an account (Google/email)
+2. Open **Keys** → **Create Key** (no credits needed — the model is free)
+3. Copy the key — it starts with `sk-or-v1-…`
+4. Save it as a GitHub Secret named `LLM_API_KEY` (see deploy instructions below)
 
-The default model is `glm-4.5-flash` (free tier, good Arabic). To use a better
-model, override `LLM_MODEL` (e.g. `glm-4.7-flash` free, or `glm-4.6`, `glm-5.3` paid).
-
-### Using OpenAI / Groq / OpenRouter instead
-
-The bot calls any OpenAI-compatible endpoint. Just override `LLM_BASE_URL` and
-`LLM_MODEL`:
+The default model is `nvidia/nemotron-3-ultra-550b-a55b:free` (free tier,
+frontier-class). To switch models or providers, override `LLM_MODEL` and
+`LLM_BASE_URL`:
 
 | Provider  | LLM_BASE_URL                          | LLM_MODEL                       |
 | --------- | ------------------------------------- | ------------------------------- |
-| Z.ai (default) | https://api.z.ai/api/paas/v4      | glm-4.5-flash                  |
+| OpenRouter (default) | https://openrouter.ai/api/v1    | nvidia/nemotron-3-ultra-550b-a55b:free |
+| Z.ai      | https://api.z.ai/api/paas/v4          | glm-4.7-flash                |
 | OpenAI    | https://api.openai.com/v1             | gpt-4o-mini                     |
 | Groq      | https://api.groq.com/openai/v1        | llama-3.3-70b-versatile         |
-| OpenRouter | https://openrouter.ai/api/v1        | meta-llama/llama-3.3-70b-instruct |
 
 ---
 
@@ -147,7 +143,7 @@ gh auth login
 The script:
 1. Verifies `gh` is installed and you're logged in
 2. Asks you for a repo name + visibility
-3. Silently prompts for your Z.ai API key (input hidden)
+3. Silently prompts for your OpenRouter API key (input hidden)
 4. Silently prompts for your Threads token + user id (input hidden)
 5. Creates the repo, commits, pushes
 6. Sets `LLM_API_KEY`, `LLM_MODEL`, `THREADS_ACCESS_TOKEN`, `THREADS_USER_ID` as GitHub Secrets
@@ -169,10 +165,10 @@ The script:
    ```
 3. Go to the repo on GitHub → **Settings → Secrets and variables → Actions →
    New repository secret**, add:
-   - `LLM_API_KEY` — your Z.ai API key (required)
+   - `LLM_API_KEY` — your OpenRouter API key (required)
    - `THREADS_ACCESS_TOKEN` — your Threads long-lived token
    - `THREADS_USER_ID` — your numeric Threads user id
-   - (Optional) `LLM_BASE_URL` — override if using OpenAI/Groq/OpenRouter
+   - (Optional) `LLM_BASE_URL` — override if using Z.ai/OpenAI/Groq/Gemini instead
    - (Optional) `LLM_MODEL` — override model name
 4. Go to **Actions tab → "The Touchline AR — Post to Threads" → Run workflow**.
 5. Choose content type (`random` by default), optional topic, and `dry_run` (off = real post).
@@ -218,8 +214,8 @@ posting, use a VPS + cron instead.)
 | Symptom | Likely cause | Fix |
 | ------- | ------------ | --- |
 | `LLM_API_KEY env var is not set` | Secret not set in GitHub | Add it in Settings → Secrets → Actions |
-| `LLM API 401: token expired or incorrect` | Bad Z.ai API key | Regenerate at https://z.ai → API Keys |
-| `LLM API 404: model not found` | Wrong model name | Set `LLM_MODEL=glm-4.5-flash` (or `glm-4.7-flash`, `glm-4.6`) in Settings → Secrets |
+| `LLM API 401: token expired or incorrect` | Bad OpenRouter key | Regenerate at https://openrouter.ai/keys |
+| `LLM API 404: model not found` | Wrong model name | Set `LLM_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free` in Settings → Secrets |
 | `Threads createMediaContainer failed: 401` | Bad/expired Threads token | Regenerate at developers.facebook.com |
 | `Threads createMediaContainer failed: 400` with `image_url` error | URL not reachable or wrong format | Try re-running; Openverse URLs are JPEG/PNG which Threads accepts |
 | Openverse returns empty results | API rate-limited (3000/day per IP) | Wait a few minutes and retry, or skip image with `--type` that doesn't need photos |

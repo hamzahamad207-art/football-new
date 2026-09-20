@@ -91,16 +91,22 @@ Lessons Learned).
 - **Dependencies**: `sharp` `^0.33.4` (image compositing / SVG rendering). No
   other runtime deps; LLM, RSS, ESPN, Openverse, Threads are all hit with plain
   `fetch`.
-- **LLM**: Z.ai GLM API, OpenAI-compatible
-  (`https://api.z.ai/api/paas/v4/chat/completions`). Default model in code:
-  `glm-4.7-flash` (free tier) — but the GitHub `LLM_MODEL` secret is what's
-  actually used. Free tier **rate-limits aggressively** (HTTP 429, error code
-  `1305`, "service may be temporarily overloaded"), so every LLM call has
-  5 attempts with growing backoff `[2.5s, 5s, 10s, 20s]` and all caption calls
-  are spaced 700ms apart.
-  - `thinking` is disabled for Z.ai/BigModel endpoints via
+- **LLM**: OpenRouter (OpenAI-compatible,
+  `https://openrouter.ai/api/v1/chat/completions`). Default model in code:
+  `nvidia/nemotron-3-ultra-550b-a55b:free` (free frontier-tier Nemotron 3 Ultra)
+  — but the GitHub `LLM_MODEL` / `LLM_BASE_URL` secrets are what's actually
+  used. OpenRouter's free tier **rate-limits** (HTTP 429 / "provider returned
+  error" when a provider is busy), so every LLM call has 5 attempts with
+  growing backoff `[2.5s, 5s, 10s, 20s]` and all caption calls are spaced
+  700ms apart.
+  - `thinking` is disabled only for Z.ai/BigModel endpoints via
     `body.thinking = { type: 'disabled' }` (GLM-4.5+ models otherwise burn the
     token budget on `reasoning_content` and return empty `content`).
+  - OpenRouter attribution headers (`HTTP-Referer`, `X-Title`) are sent so the
+    app shows on OpenRouter dashboards.
+  - Free-model daily quota: ~50 requests/day per model without credits;
+    adding as little as $10 of credits raises it to 1000/day (so double-draw
+    + regens can't starve on busy days).
 - **Image sources**: article photos (og:image/JSON-LD from the article page),
   then Openverse (`https://api.openverse.org/v1/images/`) which serves
   CC-licensed Flickr/Wikimedia photos. **Never AI-generated images.**
@@ -134,8 +140,8 @@ Repo root: `football-new-main/football-new-main/`
 
 ### Key constants worth knowing
 
-- `content.js`: `DEFAULT_BASE_URL = 'https://api.z.ai/api/paas/v4'`,
-  `DEFAULT_MODEL = 'glm-4.7-flash'`, `ESPN_SCOREBOARD`, `ESPN_LEAGUES`,
+- `content.js`: `DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'`,
+  `DEFAULT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free'`, `ESPN_SCOREBOARD`, `ESPN_LEAGUES`,
   `NEWS_FEEDS` (BBC Sport, Sky Sports, Google News; **BBC Arabic deliberately
   excluded**), `FOOTBALL_RE` / `AMERICAN_FOOTBALL_RE` (topic filtering),
   `NAMED_ENTITIES` (tracked clubs/stars/managers for hallucination grounding),
@@ -151,7 +157,7 @@ Repo root: `football-new-main/football-new-main/`
 | Name | Used in | Required for |
 |---|---|---|
 | `LLM_API_KEY` | `content.js` (`llmConfig`) | All generation |
-| `LLM_MODEL` | `content.js` | Override model (default `glm-4.7-flash`) |
+| `LLM_MODEL` | `content.js` | Override model (default `nvidia/nemotron-3-ultra-550b-a55b:free`) |
 | `LLM_BASE_URL` | `content.js` | Optional override of the endpoint |
 | `THREADS_ACCESS_TOKEN` | `threads.js` | Real publishing (`--post`) |
 | `THREADS_USER_ID` | `threads.js` | Real publishing |

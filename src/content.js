@@ -3,17 +3,17 @@
 // an OpenAI-compatible chat-completions API.
 //
 // Uses these env vars (all required for LLM, set in GitHub Secrets):
-//   LLM_API_KEY   — your Z.ai API key (https://z.ai → API Keys)
-//   LLM_BASE_URL  — defaults to "https://api.z.ai/api/paas/v4"
-//   LLM_MODEL     — defaults to "glm-4.5-flash" (free tier, good Arabic)
+//   LLM_API_KEY   — your OpenRouter API key (https://openrouter.ai/keys)
+//   LLM_BASE_URL  — defaults to "https://openrouter.ai/api/v1"
+//   LLM_MODEL     — defaults to "nvidia/nemotron-3-ultra-550b-a55b:free"
 //
-// Works with any OpenAI-compatible endpoint (Groq, OpenAI, OpenRouter, etc.)
+// Works with any OpenAI-compatible endpoint (Z.ai, Groq, OpenAI, Gemini, …)
 // by overriding LLM_BASE_URL + LLM_MODEL.
 
 import { TEMPLATES, FALLBACK_TOPICS, LEAGUES, pickRandom } from './templates.js';
 
-const DEFAULT_BASE_URL = 'https://api.z.ai/api/paas/v4';
-const DEFAULT_MODEL = 'glm-4.7-flash';
+const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+const DEFAULT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 
 // Live / recent / upcoming match data — ESPN's public scoreboard API (no key).
 const ESPN_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
@@ -52,8 +52,8 @@ function llmConfig() {
   const model = process.env.LLM_MODEL || DEFAULT_MODEL;
   if (!apiKey) {
     throw new Error(
-      `LLM_API_KEY env var is not set. Get a free key at https://z.ai → API Keys, ` +
-      `then add it as a GitHub Secret named LLM_API_KEY.`
+      `LLM_API_KEY env var is not set. Get a key at https://openrouter.ai/keys ` +
+      `(free tier included), then add it as a GitHub Secret named LLM_API_KEY.`
     );
   }
   return { apiKey, baseUrl, model };
@@ -764,8 +764,8 @@ export async function fetchNewsContext(type, opts = {}) {
 
 /**
  * Call an OpenAI-compatible chat-completions endpoint.
- * Defaults to Z.ai's public GLM API; can be repointed to OpenAI / Groq /
- * OpenRouter via env vars.
+ * Defaults to OpenRouter (free frontier-tier open models); can be repointed
+ * to Z.ai / OpenAI / Groq / Gemini via LLM_BASE_URL + LLM_MODEL env vars.
  */
 async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
   const { apiKey, baseUrl, model } = llmConfig();
@@ -778,7 +778,9 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
       { role: 'user', content: userPrompt },
     ],
     temperature,
-    max_tokens: 800,
+    // Headroom for reasoning-token models (e.g. Nemotron) so a long chain of
+    // thought can't eat the budget and truncate the final Arabic caption.
+    max_tokens: 1200,
   };
 
   // GLM-4.5+ models "think" by default and can spend the whole token budget
@@ -802,6 +804,14 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
+          // OpenRouter attribution headers (shows the app on their dashboards);
+          // ignored by other OpenAI-compatible providers.
+          ...(/openrouter\.ai/i.test(baseUrl)
+            ? {
+                'HTTP-Referer': 'https://github.com/hamzahamad207-art/football-new',
+                'X-Title': 'Touchline AR Bot',
+              }
+            : {}),
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(90000),
@@ -824,13 +834,15 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
       if (res.status === 401) {
         throw new Error(
           `LLM API 401: token expired or incorrect. Generate a new key at ` +
-          `https://z.ai → API Keys and update the LLM_API_KEY secret.`
+          `https://openrouter.ai/keys (or whichever provider LLM_BASE_URL points to) ` +
+          `and update the LLM_API_KEY secret.`
         );
       }
       if (res.status === 404 || /model.*not.*exist|not found/i.test(errText)) {
         throw new Error(
-          `LLM API 404: model "${model}" not found. Fix the LLM_MODEL secret — ` +
-          `use 'glm-4.5-flash' (free) or 'glm-4.7-flash', 'glm-4.6', 'glm-5.3'. ` +
+          `LLM API 404: model "${model}" not found. Fix the LLM_MODEL secret ` +
+          `(or LLM_BASE_URL if you switched providers). ` +
+          `Current default: 'nvidia/nemotron-3-ultra-550b-a55b:free'. ` +
           `(API said: ${errText.slice(0, 200)})`
         );
       }
