@@ -823,6 +823,101 @@ function containsFootballVocab(text) {
   return FOOTBALL_TERMS.some((t) => text.toLowerCase().includes(t.toLowerCase()));
 }
 
+// Well-known clubs / stars / managers in Arabic + Latin forms. If a caption
+// mentions one of these names but the article data doesn't, it's a
+// hallucination (e.g. "مدير التشيلسي الجديد" in a story about Arsenal WSL).
+// Only tracked names trigger, so unrelated words never cause false flags.
+const NAMED_ENTITIES = [
+  ['برشلونة', 'barcelona'],
+  ['ريال', 'real madrid'],
+  ['اتلتيكو', 'atletico'],
+  ['اشبيلية', 'إشبيلية', 'sevilla'],
+  ['ليفربول', 'liverpool'],
+  ['مانشستر', 'manchester'],
+  ['تشيلسي', 'تشلسي', 'chelsea'],
+  ['أرسنال', 'آرسنال', 'arsenal'],
+  ['توتنهام', 'سبيرز', 'tottenham', 'spurs'],
+  ['نيوكاسل', 'newcastle'],
+  ['أستون فيلا', 'استون فيلا', 'aston villa'],
+  ['برايتون', 'brighton'],
+  ['بايرن', 'bayern'],
+  ['دورتموند', 'dortmund'],
+  ['يوفنتوس', 'juventus'],
+  ['ميلان', 'ac milan'],
+  ['انتر', 'inter'],
+  ['نابولي', 'napoli'],
+  ['روما', 'roma'],
+  ['باريس', 'psg', 'paris'],
+  ['مارسيليا', 'marseille'],
+  ['ليون', 'lyon'],
+  ['الهلال', 'al hilal'],
+  ['النصر', 'al nassr'],
+  ['الأهلي', 'al ahli'],
+  ['الاتحاد', 'al ittihad'],
+  ['الشباب', 'al shabab'],
+  ['الزمالك', 'zamalek'],
+  ['بينفيكا', 'benfica'],
+  ['بورتو', 'porto'],
+  ['أياكس', 'ajax'],
+  ['ميسي', 'messi'],
+  ['رونالدو', 'ronaldo'],
+  ['مبابي', 'mbappe'],
+  ['صلاح', 'salah'],
+  ['هالاند', 'haaland'],
+  ['ليفاندوفسكي', 'levandowski'],
+  ['فينيسيوس', 'vinicius'],
+  ['يامال', 'yamal'],
+  ['بيلينغهام', 'bellingham'],
+  ['نيمار', 'neymar'],
+  ['بنزيمة', 'benzema'],
+  ['تشافي', 'شافي', 'xavi'],
+  ['غوارديولا', 'guardiola'],
+  ['أنشيلوتي', 'ancelotti'],
+  ['مورينيو', 'mourinho'],
+  ['كلوب', 'klopp'],
+  ['أرتيتا', 'arteta'],
+  ['تود بوهلي', 'todd boehly'],
+];
+
+// Normalize text for name matching: lowercase, unify Arabic letters, strip
+// punctuation so "التشيلسي" matches "تشيلسي" etc.
+function normText(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .replace(/[^a-z\u0600-\u06FF\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * True if the caption's body mentions a tracked club/star/manager name that
+ * does NOT appear in the article data (header/recap/facts) — i.e. the model
+ * invented someone. The header line itself is always grounded (it IS the
+ * article title), so we only inspect the Khaleeji body.
+ */
+function hasUngroundedName(text, ctx) {
+  const body = String(text).replace(/^\S[^\n]*\n/, '');
+  const ground = normText([ctx?.header, ctx?.recap, ctx?.facts, ctx?.topic].join(' '));
+  const bodyNorm = normText(body);
+  for (const pair of NAMED_ENTITIES) {
+    // Only aliases ≥5 chars are tracked (avoids "ليون" matching "ليونيل",
+    // "ريال"/"روما"/"ميسي" matching unrelated words).
+    const aliases = pair.map((n) => normText(n)).filter((n) => n.length >= 5);
+    if (!aliases.length) continue;
+    const inBody = aliases.some((n) => bodyNorm.includes(n));
+    if (!inBody) continue;
+    const grounded = aliases.some((n) => ground.includes(n) || ground.includes(n.replace(/^ال/, '')));
+    if (!grounded) {
+      console.warn(`⚽ Guard: caption mentions "${pair[0]}" — absent from article data.`);
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Domain guard for the generated caption. Two layers:
  *   1. Anchoring: if the caption starts with our own match header (FT/LIVE/
@@ -832,7 +927,8 @@ function containsFootballVocab(text) {
  *   3. An LLM classifier as a second opinion.
  * Returns true (football) or false (off-topic → generation will be retried).
  */
-async function isFootballOnly(text, header) {
+async function isFootballOnly(text, ctx) {
+  const header = ctx?.header;
   const anchored = header && /^(?:FT|LIVE|NEXT|🚨|📰)/.test(text);
   const hasVocab = anchored || containsFootballVocab(text);
   if (!hasVocab) {
@@ -847,6 +943,8 @@ async function isFootballOnly(text, header) {
     console.warn('⚽ Guard: English/code artifact in caption body — flagged.');
     return false;
   }
+  // Name-grounding: any tracked club/star/manager must come from the data.
+  if (hasUngroundedName(text, ctx)) return false;
   try {
     const label = await chatComplete({
       systemPrompt:
@@ -913,7 +1011,7 @@ export async function generatePostText(type, ctx) {
 
   // Candidate A (with one guarded regen if the guard flags it).
   let a = await make(false);
-  if (tpl.footballOnly !== false && !(await isFootballOnly(a, ctx?.header))) {
+  if (tpl.footballOnly !== false && !(await isFootballOnly(a, ctx))) {
     console.warn('⚽ Guard: output flagged — regenerating once...');
     a = await make(true);
   }
@@ -925,7 +1023,7 @@ export async function generatePostText(type, ctx) {
   // (e.g. the "_performance" / nonsense-word glitches).
   if (type === 'news') {
     let b = await make(false);
-    if (tpl.footballOnly !== false && !(await isFootballOnly(b, ctx?.header))) {
+    if (tpl.footballOnly !== false && !(await isFootballOnly(b, ctx))) {
       console.warn('⚽ Guard: second draw flagged — regenerating once...');
       b = await make(true);
     }
