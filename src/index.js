@@ -18,6 +18,11 @@ import { isAgentAvailable, routeModel, researchContext, verifyCaption } from './
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
+// Safety net: prevent unhandled rejections from crashing the process
+process.on('unhandledRejection', (err) => {
+  console.error(`⚠️  Unhandled rejection (non-fatal): ${err?.message || err}`);
+});
+
 function parseArgs(argv) {
   const args = { type: 'random', topic: '', post: false, dryRun: true, listTypes: false, republish: false };
   for (let i = 2; i < argv.length; i++) {

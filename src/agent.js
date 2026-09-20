@@ -39,42 +39,62 @@ export function isAgentAvailable() {
 async function callAgent(request, timeout = AGENT_TIMEOUT) {
   return new Promise((resolve, reject) => {
     const input = JSON.stringify(request);
+    let settled = false;
 
     // Try python3 first, fall back to python (Windows compatibility)
     const python = process.platform === 'win32' ? 'python' : 'python3';
 
-    const child = execFile(python, [AGENT_SCRIPT], {
-      timeout,
-      maxBuffer: 1024 * 1024, // 1MB
-      env: {
-        ...process.env,
-        // Pass through LLM config to the Python agent
-        LLM_API_KEY: process.env.LLM_API_KEY || '',
-        LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1',
-        LLM_MODEL_STRONG: process.env.LLM_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free',
-        LLM_MODEL_CHEAP: process.env.LLM_MODEL_CHEAP || 'google/gemma-3-1b-it:free',
-      },
-    }, (error, stdout, stderr) => {
-      if (error) {
-        // If Python isn't installed or agent errors, return a graceful fallback
-        console.error(`[Agent] Python agent error: ${error.message}`);
-        if (stderr) console.error(`[Agent] stderr: ${stderr}`);
-        reject(new Error(`Agent unavailable: ${error.message}`));
-        return;
-      }
+    try {
+      const child = execFile(python, [AGENT_SCRIPT], {
+        timeout,
+        maxBuffer: 1024 * 1024, // 1MB
+        env: {
+          ...process.env,
+          LLM_API_KEY: process.env.LLM_API_KEY || '',
+          LLM_BASE_URL: process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1',
+          LLM_MODEL_STRONG: process.env.LLM_MODEL || 'nvidia/nemotron-3-ultra-550b-a55b:free',
+          LLM_MODEL_CHEAP: process.env.LLM_MODEL_CHEAP || 'google/gemma-3-1b-it:free',
+        },
+      }, (error, stdout, stderr) => {
+        if (settled) return;
+        settled = true;
 
-      try {
-        const result = JSON.parse(stdout.trim());
-        resolve(result);
-      } catch (parseErr) {
-        console.error(`[Agent] Failed to parse agent output: ${stdout}`);
-        reject(new Error(`Agent output parse error: ${parseErr.message}`));
-      }
-    });
+        if (error) {
+          const msg = String(error?.message || error || 'unknown error');
+          console.error(`[Agent] Python agent error: ${msg}`);
+          if (stderr) console.error(`[Agent] stderr: ${String(stderr).slice(0, 500)}`);
+          // Resolve with error object instead of rejecting — prevents process crash
+          resolve({ error: msg });
+          return;
+        }
 
-    // Write the request to stdin
-    child.stdin.write(input);
-    child.stdin.end();
+        try {
+          const result = JSON.parse(String(stdout || '').trim());
+          resolve(result);
+        } catch (parseErr) {
+          console.error(`[Agent] Failed to parse agent output: ${String(stdout).slice(0, 200)}`);
+          resolve({ error: `parse error: ${parseErr.message}` });
+        }
+      });
+
+      // Handle stdin errors (e.g. process already exited)
+      child.stdin.on('error', () => {
+        if (!settled) {
+          settled = true;
+          resolve({ error: 'stdin error' });
+        }
+      });
+
+      // Write the request to stdin
+      child.stdin.write(input);
+      child.stdin.end();
+    } catch (e) {
+      // execFile itself threw (e.g. python not found)
+      if (!settled) {
+        settled = true;
+        resolve({ error: String(e?.message || e) });
+      }
+    }
   });
 }
 
@@ -87,17 +107,14 @@ async function callAgent(request, timeout = AGENT_TIMEOUT) {
  * @returns {Promise<{model: string, reason: string}>}
  */
 export async function routeModel(contentType, topic = '', context = null) {
-  try {
-    return await callAgent({
-      action: 'route',
-      type: contentType,
-      topic,
-      context,
-    });
-  } catch {
-    // Fallback: always use strong model (safe default)
-    return { model: 'strong', reason: 'Agent unavailable — using strong model' };
-  }
+  const result = await callAgent({
+    action: 'route',
+    type: contentType,
+    topic,
+    context,
+  });
+  if (result.error) return { model: 'strong', reason: 'Agent unavailable — using strong model' };
+  return result;
 }
 
 /**
@@ -146,11 +163,13 @@ export async function generateWithStyle(systemPrompt, userPrompt, styleProfile =
  * @returns {Promise<{passed: boolean, issues: string[], score: number}>}
  */
 export async function verifyCaption(caption, context) {
-  return callAgent({
+  const result = await callAgent({
     action: 'verify',
     caption,
     context,
   });
+  if (result.error) throw new Error(result.error);
+  return result;
 }
 
 /**
@@ -162,12 +181,14 @@ export async function verifyCaption(caption, context) {
  * @returns {Promise<object>} - Enriched context
  */
 export async function researchContext(contentType, topic = '', articleData = null) {
-  return callAgent({
+  const result = await callAgent({
     action: 'research',
     type: contentType,
     topic,
     article_data: articleData,
   });
+  if (result.error) throw new Error(result.error);
+  return result;
 }
 
 /**
@@ -204,7 +225,9 @@ export async function scoreCaption(caption, typeName = 'news') {
  * @returns {Promise<{status: string, model_strong: string, model_cheap: string}>}
  */
 export async function agentHealth() {
-  return callAgent({ action: 'health' });
+  const result = await callAgent({ action: 'health' });
+  if (result.error) throw new Error(result.error);
+  return result;
 }
 
 export default {
