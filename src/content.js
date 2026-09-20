@@ -1205,7 +1205,7 @@ function arabicStems(normTok) {
       out.add(cur.replace(/^ال/, ''));
     }
   }
-  return out;
+  return [...out];
 }
 
 /**
