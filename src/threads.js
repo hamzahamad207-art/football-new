@@ -62,10 +62,36 @@ export async function createMediaContainer({ text, imageUrl }) {
 
 /**
  * Publish a previously-created media container to the feed.
+ * Threads needs time to process the image — poll until ready.
  */
 export async function publishMedia(containerId) {
   const { accessToken } = getThreadsConfig();
 
+  // Poll container status until Threads finishes processing the image
+  const MAX_POLLS = 10;
+  const POLL_DELAY_MS = 3000;
+
+  for (let attempt = 1; attempt <= MAX_POLLS; attempt++) {
+    await new Promise((r) => setTimeout(r, POLL_DELAY_MS));
+
+    // Check container status
+    const statusUrl = `${BASE}/${containerId}?fields=status_code&access_token=${encodeURIComponent(accessToken)}`;
+    const statusRes = await fetch(statusUrl);
+    const statusJson = await statusRes.json();
+    const status = statusJson.status_code;
+
+    if (status === 'FINISHED') {
+      break; // Ready to publish
+    } else if (status === 'ERROR') {
+      throw new Error(`Threads container processing failed: ${JSON.stringify(statusJson)}`);
+    }
+    // IN_PROGRESS or other — keep polling
+    if (attempt < MAX_POLLS) {
+      console.log(`   ⏳ Container processing... (attempt ${attempt}/${MAX_POLLS}, status: ${status})`);
+    }
+  }
+
+  // Now publish
   const url = `${BASE}/${containerId}/publish`;
   console.log(`📡 Publishing...`);
 
