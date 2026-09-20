@@ -12,7 +12,10 @@
     "post:analysis": "node src/index.js --type analysis",
     "post:meme": "node src/index.js --type meme",
     "post:throwback": "node src/index.js --type throwback",
-    "post:random": "node src/index.js --type random"
+    "post:random": "node src/index.js --type random",
+    "agent:health": "echo '{\"action\":\"health\"}' | python agents/touchline_agent.py",
+    "agent:route": "echo '{\"action\":\"route\",\"type\":\"meme\"}' | python agents/touchline_agent.py",
+    "agent:test": "echo '{\"action\":\"verify\",\"caption\":\"FT: برشلونة 2 - 1 ريال مدريد\",\"context\":{\"header\":\"FT: برشلونة 2 - 1 ريال مدريد\",\"topic\":\"El Clasico\"}}' | python agents/touchline_agent.py"
   },
   "engines": {
     "node": ">=18"

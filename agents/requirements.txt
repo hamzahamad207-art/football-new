@@ -1,0 +1,3 @@
+# Touchline Agent — Consolidated AI assistant
+# No external dependencies — uses only Python stdlib (urllib, json, re, etc.)
+# Python 3.10+ required

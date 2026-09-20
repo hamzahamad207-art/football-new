@@ -58,6 +58,11 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Setup Python (for Touchline Agent)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
@@ -78,6 +83,7 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          LLM_MODEL_CHEAP: ${{ secrets.LLM_MODEL_CHEAP }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           BOT_TOPIC: ${{ inputs.topic }}

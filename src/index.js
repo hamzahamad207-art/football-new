@@ -14,7 +14,8 @@ import { fetchNewsContext, generatePostText, newsTitleKey } from './content.js';
 import { pickImageForContent } from './images.js';
 import { postToThreads } from './threads.js';
 import { applyArabicOverlay, pushComposedImage } from './overlay.js';
-import { readFileSync } from 'node:fs';
+import { isAgentAvailable, routeModel, researchContext, verifyCaption } from './agent.js';
+import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 function parseArgs(argv) {
@@ -157,17 +158,88 @@ async function main() {
   console.log(`Mode: ${args.post ? 'LIVE POST' : 'DRY RUN'}`);
   console.log(`──────────────────────────────`);
 
+  // ── Touchline Agent: check availability ──
+  const agentReady = isAgentAvailable();
+  if (agentReady) {
+    console.log(`🤖 Touchline Agent: available`);
+    try {
+      const health = await (await import('./agent.js')).agentHealth();
+      console.log(`   Models: strong=${health.model_strong}, cheap=${health.model_cheap}`);
+    } catch { /* non-fatal */ }
+  } else {
+    console.log(`ℹ️  Touchline Agent: not available (Python not found) — using Node.js pipeline only`);
+  }
+
   // 1. Fetch news / context (pass topic override if provided). News runs also
   // carry the history of previously-posted stories so the picker skips repeats.
   const history = type === 'news' ? loadNewsSeen() : [];
-  const ctx = await fetchNewsContext(type, { topicOverride: args.topic, history });
+  let ctx = await fetchNewsContext(type, { topicOverride: args.topic, history });
   console.log(`📋 Topic: ${ctx.topic}`);
   if (ctx.header) console.log(`   Header: ${ctx.header}`);
   if (ctx.summary) console.log(`   Summary: ${ctx.summary.slice(0, 100)}...`);
 
+  // ── Touchline Agent: research enrichment (scrape full article body) ──
+  if (agentReady && ctx.article_url) {
+    console.log(`🔬 Agent: enriching context with web research...`);
+    try {
+      const enriched = await researchContext(type, ctx.topic, {
+        article_url: ctx.article_url,
+        header: ctx.header || '',
+        recap: ctx.recap || '',
+        facts: ctx.facts || '',
+        topic: ctx.topic || '',
+      });
+      if (enriched.full_body) {
+        ctx = { ...ctx, full_body: enriched.full_body };
+        console.log(`   ✅ Article body enriched (${enriched.full_body.length} chars)`);
+      }
+    } catch (err) {
+      console.warn(`   ⚠️  Research enrichment failed (${err.message}) — continuing with existing context`);
+    }
+  }
+
+  // ── Touchline Agent: smart model routing ──
+  if (agentReady) {
+    console.log(`🔀 Agent: checking model routing...`);
+    try {
+      const route = await routeModel(type, ctx.topic, {
+        recap: ctx.recap,
+        facts: ctx.facts,
+      });
+      console.log(`   → ${route.model} model (${route.reason})`);
+    } catch {
+      console.log(`   → Using default model routing`);
+    }
+  }
+
   // 2. Generate Arabic post text via LLM
   const text = await generatePostText(type, ctx);
   console.log(`\n📝 Post text (${text.length} chars):\n${text}\n`);
+
+  // ── Touchline Agent: fact verification ──
+  if (agentReady && type === 'news') {
+    console.log(`🔍 Agent: verifying caption against source data...`);
+    try {
+      const verification = await verifyCaption(text, {
+        header: ctx.header || '',
+        recap: ctx.recap || '',
+        facts: ctx.facts || '',
+        topic: ctx.topic || '',
+        full_body: ctx.full_body || '',
+      });
+      if (verification.passed) {
+        console.log(`   ✅ Caption verified (score: ${verification.score}/100)`);
+      } else {
+        console.warn(`   ⚠️  Caption issues found (score: ${verification.score}/100):`);
+        for (const issue of verification.issues) {
+          console.warn(`      - ${issue}`);
+        }
+        console.warn(`   ℹ️  Continuing with generated caption (manual review recommended)`);
+      }
+    } catch (err) {
+      console.warn(`   ⚠️  Verification failed (${err.message}) — continuing`);
+    }
+  }
 
   // 3. Fetch image
   const { imageUrl } = await pickImageForContent(type, ctx);

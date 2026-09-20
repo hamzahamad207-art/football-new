@@ -1,0 +1,19 @@
+{
+  "tone": "informative",
+  "voice": "fan-like",
+  "avg_sentence_length": 18.679012345679013,
+  "closing_style": "sharp_comment",
+  "emoji_frequency": "moderate",
+  "common_openers": [],
+  "common_closers": [
+    "موسم واحد ما بيحدد قيمة اللاعب.",
+    "• في حال قرر توتنهام إقالة دي زيربي سيكلفهم ذلك 60 مليون يورو! 😨",
+    "ما تحكموش على ألونسو دلوقتي، تشكيلته لسه ما كملتش.",
+    "ألونسو يا دوب بقاله شهرين هنا! إدوه فرصة واثقوا فيه 🔥💙",
+    "باع تشيلسي إنزو فرنانديز إلى مانشستر سيتي وآندري سانتوس إلى مانشستر يونايتد، ولكنه واجه صعوبة في استقدام بدلاء مناسبين، مما ترك ألونسو بشيارات محدودة في خط الوسط. 🔵"
+  ],
+  "vocabulary_level": "moderate",
+  "arabic_dialect": "khaleeji",
+  "content_emphasis": "emotion",
+  "recommended_system_prompt_addition": ""
+}
