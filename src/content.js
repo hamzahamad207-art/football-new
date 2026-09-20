@@ -808,8 +808,8 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
       });
     } catch (err) {
       // Network hiccup or the API taking too long — retry, same as 429s.
-      if (attempt < 3) {
-        const delay = [3000, 8000][attempt - 1] || 8000;
+      if (attempt < 5) {
+        const delay = [2500, 5000, 10000, 20000][attempt - 1] || 20000;
         console.warn(
           `⚠️  LLM request failed (${String(err?.message).slice(0, 60)}) — retrying in ${delay / 1000}s...`
         );
