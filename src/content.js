@@ -725,6 +725,9 @@ export async function fetchNewsContext(type, opts = {}) {
         )
           s += 2;
         if (i.source === 'BBC Sport' || i.source === 'Sky Sports') s += 1;
+        // Video pages are presentation banners (English studio graphics on
+        // screen) rather than clean match photos — prefer article pages.
+        if (/\/videos\//.test(i.url || '')) s -= 1;
         if (/wsl|women|سيدات/i.test(t)) s -= 1;
         return s;
       };

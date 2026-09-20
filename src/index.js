@@ -12,6 +12,7 @@ import { CONTENT_TYPES, pickRandom, TEMPLATES } from './templates.js';
 import { fetchNewsContext, generatePostText } from './content.js';
 import { pickImageForContent } from './images.js';
 import { postToThreads } from './threads.js';
+import { applyArabicOverlay, pushComposedImage } from './overlay.js';
 
 function parseArgs(argv) {
   const args = { type: 'random', topic: '', post: false, dryRun: true, listTypes: false };
@@ -98,8 +99,34 @@ async function main() {
 
   // 3. Fetch image
   const { imageUrl } = await pickImageForContent(type, ctx);
+
+  // 3b. "Redo" the image with Arabic text (user requirement): download the real
+  // photo, stamp the post's Arabic headline onto it, host it in the public repo
+  // (out/) so Threads can fetch it. If that fails, post the original real photo.
+  let publishImageUrl = imageUrl;
   if (imageUrl) {
-    console.log(`🖼️  Image URL: ${imageUrl}\n`);
+    console.log(`🖼️  Image URL: ${imageUrl}`);
+    const headerText = String(text || '').split('\n')[0] || '';
+    try {
+      const composed = await applyArabicOverlay(imageUrl, headerText);
+      if (composed) {
+        const previewUrl = await pushComposedImage(composed.file);
+        if (previewUrl) {
+          publishImageUrl = previewUrl;
+          console.log(
+            `🖼️  Arabic text added to photo (${composed.width}x${composed.height}, ${composed.lines} line(s))`
+          );
+          console.log(`   Composed photo: ${publishImageUrl}`);
+        } else {
+          console.warn(`⚠️  Arabic overlay composed but could not be hosted — using original photo.`);
+        }
+      } else {
+        console.log(`⚠️  Arabic overlay skipped (text not Arabic or image/font issue) — using original photo.`);
+      }
+    } catch (err) {
+      console.warn(`⚠️  Arabic overlay failed (${err.message}) — using original photo.`);
+    }
+    console.log('');
   } else if (args.post) {
     // TouchlineX-style posts always ship with a photo — refuse to publish one without it.
     throw new Error('No valid image found — post aborted. Retry with a different topic or try again later.');
@@ -116,7 +143,7 @@ async function main() {
       console.error('   Set them as environment variables or GitHub Secrets.');
       process.exit(1);
     }
-    const { postId } = await postToThreads({ text, imageUrl });
+    const { postId } = await postToThreads({ text, imageUrl: publishImageUrl });
     console.log(`\n✅ Posted successfully! Post id: ${postId}`);
   } else {
     console.log(`ℹ️  Dry run complete. Re-run with --post to publish to Threads.`);

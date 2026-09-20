@@ -34,7 +34,7 @@ on:
   #   - cron: '0 */6 * * *'   # every 6 hours → 4 posts/day
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: post-to-threads
@@ -52,6 +52,21 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install Arabic font (for image text overlays)
+        run: |
+          set -e
+          mkdir -p "$HOME/.local/share/fonts"
+          for FAMILY in Black ExtraBold Bold; do
+            curl -fsSL \
+              "https://raw.githubusercontent.com/google/fonts/main/ofl/tajawal/Tajawal-$FAMILY.ttf" \
+              -o "$HOME/.local/share/fonts/Tajawal-$FAMILY.ttf" || true
+          done
+          fc-cache -f "$HOME/.local/share/fonts" >/dev/null 2>&1 || true
+          fc-match "Tajawal" || true
 
       - name: Generate post + image, publish to Threads
         env:
