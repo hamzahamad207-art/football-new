@@ -977,6 +977,10 @@ const ARABIC_WORDS = new Set([
   'اسباب', 'معنى', 'أهمية', 'اهميه', 'قيمة', 'قيمه', 'مستحق', 'مستحقه',
   'كبيرتهم', 'كبيرهم', 'مؤكد', 'مؤكده', 'محسوم', 'محسومه', 'يحدد', 'حدد',
   'يحددها', 'يستحقون', 'يستاهل', 'يستاهلون',
+  // the mandatory closing question + astonishment (misc. hype vocabulary)
+  'رأي', 'راي', 'رأيك', 'رايک', 'رأيكم', 'رايكم', 'آراء', 'اراء', 'ارائه',
+  'ذهول', 'ذهوله', 'ذهولهه', 'دهشة', 'دهشه', 'انبهار', 'انبهر', 'ينبهر',
+  'مندهش', 'مندهشين', 'مبهر', 'مبهره',
 ]);
 
 // Count Arabic tokens in the body that look like invented gibberish (not in
@@ -1183,7 +1187,7 @@ function findUngroundedTransliteration(text, ctx) {
 // progressively suffix-trimmed form.
 function arabicStems(normTok) {
   const out = new Set();
-  const SUFFIXES = ['وا', 'ها', 'ون', 'هم', 'هن', 'تا', 'نا', 'تم', 'ات', 'ان', 'ين', 'و', 'ه', 'ا', 'ي', 'ن'];
+  const SUFFIXES = ['كم', 'وا', 'ها', 'ناهم', 'ون', 'هم', 'هن', 'تا', 'نا', 'تم', 'ات', 'ان', 'ين', 'ك', 'و', 'ه', 'ا', 'ي', 'ن'];
   const forms = [normTok, normTok.replace(/^ال/, '')];
   // Strip common single-letter prepositions/particles that fuse into words:
   // ل (for), و (and), ب (with), ك (like), ف (then), س (will).
