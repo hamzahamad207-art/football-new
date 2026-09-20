@@ -1263,11 +1263,17 @@ async function isFootballOnly(text, ctx) {
     return false;
   }
   // Artifact check: the Khaleeji body must contain no English words and no
-  // code tokens (e.g. the "_performance" glitch). The first (header) line may
-  // legitimately contain Latin team names (FT: Sevilla 1 - 3 FC Barcelona).
-  const body = String(text).replace(/^\S[^\n]*\n/, '');
-  if (/\b[a-zA-Z]{2,}\b/.test(body) || /_{2,}|\{\{|\}\}|```/.test(String(text))) {
-    console.warn('⚽ Guard: English/code artifact in caption body — flagged.');
+  // code tokens (e.g. the "_performance" glitch). The first line may only
+  // contain Latin when it's a verbatim typed score/status header
+  // (FT:/LIVE:/HT:/ET:/NEXT:/BREAKING:/CLOSE:) — any other first-line Latin
+  // (e.g. an English word leaking into a quote/meme headline) is flagged.
+  const full = String(text);
+  const firstLine = full.split('\n')[0] || '';
+  const typedHeader = /^(?:FT|LIVE|HT|ET|NEXT|BREAKING|CLOSE)\s*[:]/i.test(firstLine);
+  const latinInFirst = /\b[a-zA-Z]{2,}\b/.test(firstLine);
+  const body = full.replace(/^\S[^\n]*\n/, '');
+  if (/\b[a-zA-Z]{2,}\b/.test(body) || (latinInFirst && !typedHeader) || /_{2,}|\{\{|\}\}|```/.test(full)) {
+    console.warn(`⚽ Guard: English/code artifact in caption${latinInFirst && !typedHeader ? ' (first line)' : ''} — flagged.`);
     return false;
   }
   // All-Arabic requirement: a trending news post (no typed topic) must contain
