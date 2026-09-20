@@ -911,12 +911,13 @@ function normText(s) {
 }
 
 /**
- * True if the caption's body mentions a tracked club/star/manager name that
- * does NOT appear in the article data (header/recap/facts) — i.e. the model
- * invented someone. The header line itself is always grounded (it IS the
+ * Returns the display name of the first tracked club/star/manager that the
+ * caption's body mentions WITHOUT appearing in the article data (header/
+ * recap/facts) — i.e. the model invented someone. Returns null if the caption
+ * is fully grounded. The header line itself is always grounded (it IS the
  * article title), so we only inspect the Khaleeji body.
  */
-function hasUngroundedName(text, ctx) {
+function findUngroundedName(text, ctx) {
   const body = String(text).replace(/^\S[^\n]*\n/, '');
   const ground = normText([ctx?.header, ctx?.recap, ctx?.facts, ctx?.topic].join(' '));
   const bodyNorm = normText(body);
@@ -930,10 +931,10 @@ function hasUngroundedName(text, ctx) {
     const grounded = aliases.some((n) => ground.includes(n) || ground.includes(n.replace(/^ال/, '')));
     if (!grounded) {
       console.warn(`⚽ Guard: caption mentions "${pair[0]}" — absent from article data.`);
-      return true;
+      return pair[0];
     }
   }
-  return false;
+  return null;
 }
 
 /**
@@ -962,7 +963,7 @@ async function isFootballOnly(text, ctx) {
     return false;
   }
   // Name-grounding: any tracked club/star/manager must come from the data.
-  if (hasUngroundedName(text, ctx)) return false;
+  if (findUngroundedName(text, ctx)) return false;
   try {
     const label = await chatComplete({
       systemPrompt:
@@ -1012,7 +1013,7 @@ export async function generatePostText(type, ctx) {
       .replace(/^["'“”]|["'“”]$/g, '')
       .trim();
 
-  const make = async (nudge) =>
+  const make = async (nudge, target) =>
     clean(
       await chatComplete({
         systemPrompt: tpl.systemPrompt,
@@ -1021,18 +1022,34 @@ export async function generatePostText(type, ctx) {
           (nudge
             ? '\n\nملاحظة: أعد كتابة المنشور حرفيًا بنفس السطر الأول، واجعل الأسطر الخليجية بالعربية فقط ' +
               '(ممنوع كلمات إنجليزية أو رموز مثل _ داخل النص)، ولا تذكر أي نادٍ/لاعب/رقم غير مذكور ' +
-              'في المعلومات أعلاه، واختم دائمًا بسؤال واحد.'
+              'في المعلومات أعلاه، واختم دائمًا بسؤال واحد' +
+              (target ? `، ولا تذكر اسم "${target}" إطلاقًا` : '') +
+              '.'
             : ''),
         temperature: tpl.temperature ?? 0.8,
       })
     );
 
-  // Candidate A (with one guarded regen if the guard flags it).
-  let a = await make(false);
-  if (tpl.footballOnly !== false && !(await isFootballOnly(a, ctx))) {
-    console.warn('⚽ Guard: output flagged — regenerating once...');
-    a = await make(true);
-  }
+  // A guarded draw: generate, run all guards, and if flagged regenerate up to
+  // 3 times — each regen explicitly bans the offending name (so a stubborn
+  // hallucination like "ليفاندوفسكي" in a Barça post can't survive).
+  const guardedDraw = async () => {
+    let t = await make(false);
+    if (tpl.footballOnly !== false) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const bad = findUngroundedName(t, ctx);
+        const pass = await isFootballOnly(t, ctx); // includes the name check
+        if (pass && !bad) return t;
+        console.warn(`⚽ Guard: flag (${bad || 'domain'}) — regenerating (${attempt}/3)...`);
+        t = await make(true, bad || undefined);
+      }
+      console.warn('⚽ Guard: caption still flagged after 3 attempts — accepting as-is.');
+    }
+    return t;
+  };
+
+  // Candidate A.
+  const a = await guardedDraw();
   const sa = scorePost(a, ctx);
   let text = a;
 
@@ -1042,13 +1059,9 @@ export async function generatePostText(type, ctx) {
   // (rate limit etc.), keep the first caption instead of failing the run.
   if (type === 'news') {
     try {
-      let b = await make(false);
-      if (tpl.footballOnly !== false && !(await isFootballOnly(b, ctx))) {
-        console.warn('⚽ Guard: second draw flagged — regenerating once...');
-        b = await make(true);
-      }
+      const b = await guardedDraw();
       const sb = scorePost(b, ctx);
-      text = sb > sa ? b : a;
+      if (sb > sa) text = b;
       console.log(`✨ Picked better of 2 generated captions (scores ${Math.max(sa, sb)}).`);
     } catch (err) {
       console.warn(`⚠️  Second caption draw skipped (${err.message?.slice(0, 80)}) — using first caption.`);
