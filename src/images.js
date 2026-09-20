@@ -200,6 +200,12 @@ async function isValidImageUrl(url) {
  * a real, fetchable image. Results are shuffled so posts vary.
  * Returns { imageUrl } or { imageUrl: null } if none found.
  */
+/** Quick heuristic: skip images whose URL path contains "kid", "children", or "youth". */
+function isLikelyKidImage(url) {
+  const low = String(url).toLowerCase();
+  return /kid|chil|youth|minor/.test(low);
+}
+
 export async function pickImageForContent(type, ctx) {
   // 1) Prefer the REAL photos from the article itself (og:image / JSON-LD —
   //    usually the actual match photo, not a generic stock shot).
@@ -218,6 +224,10 @@ export async function pickImageForContent(type, ctx) {
     if (large !== url) candidates2.push(large);
     candidates2.push(url);
     for (const u of candidates2) {
+      if (isLikelyKidImage(u)) {
+        console.log(`   ⚠️  Skipping likely-kid image (URL contains "kid/children/youth"): ${u}`);
+        continue;
+      }
       if (await isValidImageUrl(u)) {
         console.log(`🖼️  Image URL (from article): ${u}`);
         return { imageUrl: u };
@@ -249,8 +259,12 @@ export async function pickImageForContent(type, ctx) {
       if (tried.has(url)) continue;
       tried.add(url);
       if (await isValidImageUrl(url)) {
-        console.log(`🖼️  Image URL: ${url}`);
-        return { imageUrl: url };
+        if (isLikelyKidImage(url)) {
+          console.log(`   ⚠️  Skipping likely-kid image: ${url}`);
+        } else {
+          console.log(`🖼️  Image URL: ${url}`);
+          return { imageUrl: url };
+        }
       }
       if (++checked >= 6) break; // don't burn the whole run validating
     }
