@@ -1344,6 +1344,8 @@ export async function generatePostText(type, ctx) {
       // Drop stray quote marks left dangling at the end of any line (an LLM
       // quirk for quote/meme posts) before the first line becomes the image text.
       .replace(/["“”'‘’]\s*$/gm, '')
+      // Strip markdown bold/italic leftovers the model sometimes emits (**..**, *..*).
+      .replace(/\*+/g, '')
       .trim();
 
   const make = async (nudge, target) => {
