@@ -1160,6 +1160,17 @@ function lev(a, b) {
 }
 
 function findUngroundedTransliteration(text, ctx) {
+  // This guard romanizes unknown Arabic tokens and checks they resemble a real
+  // word from the NEWS ARTICLE (English headline/recap). With only a canned
+  // Arabic topic (meme/quote/throwback/fact, or fallback stats/analysis) there
+  // is no foreign-language ground truth, so every unknown verb/noun ("يركز",
+  // "يحمل") would be flagged and force repeated regenerations. Known-name
+  // hallucinations are still caught by findUngroundedName. So: skip here when
+  // there's no article data to ground against.
+  const hasArticleData =
+    !!(ctx?.recap && ctx.recap.trim() && ctx.recap !== '—') ||
+    !!(ctx?.facts && ctx.facts.trim());
+  if (!hasArticleData) return null;
   const body = String(text).replace(/^\S[^\n]*\n/, '');
   const ground = normText([ctx?.header, ctx?.recap, ctx?.facts, ctx?.topic].join(' '));
   const groundAr = (ground.match(/[\u0600-\u06FF]+/g) || []).join(' ');
