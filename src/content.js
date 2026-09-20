@@ -940,6 +940,43 @@ const ARABIC_WORDS = new Set([
   'الاوروبية', 'الاتحاد', 'الرابطة', 'اللجنة', 'المحترفين', 'الصيف', 'الشتاء',
   'الربيع', 'الخريف', 'القادم', 'الجاي', 'يا', 'ياويلهم', 'ويل', 'يوه', 'اه',
   'و', 'والله', 'آخر', 'اخر', 'بين', 'البين', 'بينهم', 'وصولا', 'وصول',
+  // verbs & nouns commonly used in hype captions (keep transliteration-guard
+  // false positives low)
+  'ثقة', 'ثقه', 'كامل', 'كامله', 'كاملة', 'منافس', 'منافسة', 'منافس قوي', 'شرس',
+  'شرسه', 'شرسة', 'أجواء', 'اجواء', 'تألق', 'تالق', 'يألق', 'أبدع', 'ابدع',
+  'يبدع', 'قدّم', 'قدم', 'يقدّم', 'يقدم', 'أقدّم', 'اقدم', 'شارك', 'يشارك',
+  'مشاركة', 'غاب', 'يغيب', 'غياب', 'حاضر', 'يستعد', 'استعد', 'استعداد',
+  'جاهز', 'جاهزه', 'جاهزة', 'يسعى', 'سعى', 'يحلم', 'حلم', 'يستحق', 'استحق',
+  'انطلاق', 'ينطلق', 'انطلق', 'متوقع', 'متوقعه', 'متوقعة', 'توقعات', 'فرصة',
+  'فرص', 'فرصه', 'افضل', 'الأفضل', 'أفضل', 'اقوى', 'الأقوى', 'أقوى', 'الاسرع',
+  'أسرع', 'اسرع', 'خصم', 'خصوم', 'الخصم', 'الصراع', 'صراع', 'صراع قوي',
+  'الكلاسيكو', 'كلاسيكو', 'المواجهة', 'مواجهة', 'مواجهات', 'ملحمة', 'ملحمه',
+  'مسيرة', 'مسيره', 'رحلة', 'رحله', 'موهبة', 'موهبه', 'مواهب', 'نجم', 'نجوم',
+  'الهداف', 'هداف', 'صانع', 'الخبر', 'خبر', 'اخبار', 'جيل', 'زمن', 'حقبة',
+  'حقبه', 'انجاز', 'إنجاز', 'ابداع', 'إبداع', 'جوده', 'جودة', 'تميز', 'يتميز',
+  'مميز', 'مميزه', 'مميزة', 'روح', 'قلب', 'قتال', 'مقاتل', 'عزيمة', 'عزيمه',
+  'إصرار', 'اصرار', 'تصميم', 'إرادة', 'ارادة', 'حضور', 'صفقة', 'صفقه', 'صفقات',
+  'انتقال', 'انتقالات', 'ميركاتو', 'عقد', 'عقود', 'تجديد', 'جهاز', 'فني',
+  'تكتيك', 'خطط', 'خطة', 'استحواذ', 'تمريرات', 'تصدي', 'تصديات', 'أمسك',
+  'امسك', 'يمسك', 'أبعد', 'ابعد', 'يبعد', 'اخراج', 'أخراج', 'اقصاء', 'إقصاء',
+  'مغامرة', 'مغامره', 'محاولات', 'محاولة', 'يسدد', 'سدد', 'سددها', 'صوب',
+  'يضرب', 'يضرب', 'يرتطم', 'ارتطم', 'مرتدة', 'مرتده', 'رائعة', 'رائعه',
+  'مستفزة', 'مستفزه', 'سريعة', 'سريعه', 'متواصلة', 'متواصله', 'قادرة',
+  'قادره', 'يحتاج', 'يحتاجون', 'محتاج', 'يستطيع', 'تقدر', 'يقدر', 'يتحمل',
+  'يتحمّل', 'يستمر', 'يستمرون', 'ومواصل', 'تستمر', 'أسلوب', 'اسلوب', 'طريقة',
+  'طريقه', 'أساليب', 'اساليب', 'فكرة', 'فكره', 'أفكار', 'افكار', 'عالم',
+  'الحديث', 'الحديثه', 'القديم', 'التقليدي', 'النيو', 'الجديده', 'جديده',
+  'الخاص', 'الخاصه', 'العامه', 'التعامل', 'الوضع', 'وضع', 'أمور', 'امور',
+  'الأمور', 'خطوة', 'خطوه', 'خطوات', 'مسار', 'موسمنا', 'موسمكم', 'موسمهم',
+  'ودرجة', 'درجه', 'درجة', 'مرحلة', 'مرحله', 'مراحل', 'نهاية', 'نهايه',
+  'النهائيات', 'نهائيات', 'اخراج', 'أنقله', 'نقله', 'نقل', 'بث', 'قنوات',
+  'استوديو', 'تحليل', 'محلل', 'معلق', 'تعليق', 'تصعيد', 'وتصدر', 'يتربع',
+  'تربع', 'يتقدم', 'يتقدمون', 'القاع', 'قاع', 'الهبوط', 'الصعود', 'وإنهزم',
+  'انهزم', 'وخسر', 'سحقوه', 'تاريخهم', 'تجربة', 'تجربه', 'تجارب', 'ذكريات',
+  'لقاءات', 'مواسم', 'أحداث', 'احداث', 'لحظات', 'قصص', 'قصة', 'سبب', 'أسباب',
+  'اسباب', 'معنى', 'أهمية', 'اهميه', 'قيمة', 'قيمه', 'مستحق', 'مستحقه',
+  'كبيرتهم', 'كبيرهم', 'مؤكد', 'مؤكده', 'محسوم', 'محسومه', 'يحدد', 'حدد',
+  'يحددها', 'يستحقون', 'يستاهل', 'يستاهلون',
 ]);
 
 // Count Arabic tokens in the body that look like invented gibberish (not in
@@ -955,7 +992,9 @@ function unknownTokenCount(body, ctx) {
   let unknown = 0;
   for (const token of tokens) {
     const t = normText(token).replace(/^ال/, '');
-    if (ARABIC_WORDS.has(t) || t.length < 4 || aliases.has(t)) continue;
+    if (t.length < 4) continue;
+    const stems = arabicStems(normText(token));
+    if (ARABIC_WORDS.has(t) || stems.some((st) => ARABIC_WORDS.has(st) || aliases.has(st))) continue;
     unknown++;
   }
   return unknown;
@@ -1058,6 +1097,117 @@ function findUngroundedName(text, ctx) {
   return null;
 }
 
+// ---- Transliteration grounding (catches brand-new invented names) ---------
+// A caption token that is not a known word and not a known alias must plausibly
+// romanize back to something in the article text (title/summary). Otherwise it
+// is treated as a hallucinated name/word ("فان هاييك", "ريسلغ", "روبنكير").
+const AR_LATIN = {
+  ب: 'b', ت: 't', ث: 'th', ج: 'j', ح: 'h', خ: 'kh', د: 'd', ذ: 'dh', ر: 'r',
+  ز: 'z', س: 's', ش: 'sh', ص: 's', ض: 'd', ط: 't', ظ: 'z', ع: '', غ: 'gh',
+  ف: 'f', ق: 'q', ك: 'k', ل: 'l', م: 'm', ن: 'n', ه: 'h', و: '', ي: '',
+  ء: '',
+};
+function arSkel(tok) {
+  let out = '';
+  for (const ch of tok) out += AR_LATIN[ch] || '';
+  return out;
+}
+function enSkel(word) {
+  const w = String(word).toLowerCase().replace(/[^a-z]/g, '');
+  return w.replace(/[aeiouy']/g, '');
+}
+function lev(a, b) {
+  const m = a.length, n = b.length;
+  if (a === b) return 0;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i][j - 1] + 1, dp[i - 1][j] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+function findUngroundedTransliteration(text, ctx) {
+  const body = String(text).replace(/^\S[^\n]*\n/, '');
+  const ground = normText([ctx?.header, ctx?.recap, ctx?.facts, ctx?.topic].join(' '));
+  const groundAr = (ground.match(/[\u0600-\u06FF]+/g) || []).join(' ');
+  const tokens = String(body).match(/[\u0600-\u06FF]{4,}/g) || [];
+  // English word skeletons from the article data, used as the "ground truth"
+  // that a transliterated token must resemble.
+  const groundWords = new Set();
+  for (const w of String(ctx?.header + ' ' + ctx?.recap + ' ' + ctx?.facts + ' ' + ctx?.topic).match(/[a-z]{4,}/gi) || []) {
+    const s = enSkel(w);
+    if (s.length >= 3) groundWords.add(s);
+  }
+  const knownAliases = new Set();
+  for (const pair of NAMED_ENTITIES) {
+    for (const a of pair) {
+      const n = normText(a).replace(/^ال/, '');
+      if (n.length >= 3) knownAliases.add(n);
+    }
+  }
+  for (const token of tokens) {
+    const tokenNorm = normText(token);
+    const t = tokenNorm.replace(/^ال/, '');
+    if (t.length < 4) continue;
+    // Morphological fallback: strip ال and common verb suffixes so real
+    // Khaleeji words ("كسروها"→"كسر", "وصلوا"→"وصل") resolve to allowlisted
+    // roots instead of being flagged as invented names.
+    const stems = arabicStems(tokenNorm);
+    if (stems.some((st) => ARABIC_WORDS.has(st) || knownAliases.has(st))) continue;
+    // Already grounded as Arabic text in the article data?
+    if (groundAr.includes(t) || stems.some((st) => groundAr.includes(st))) continue;
+    const s = arSkel(t);
+    if (s.length === 0) continue;
+    let grounded = false;
+    for (const w of groundWords) {
+      if (lev(s, w) <= 2) { grounded = true; break; }
+      if (s.length >= 3 && w.length >= 3 && w.includes(s)) { grounded = true; break; }
+    }
+    if (!grounded) {
+      console.warn(`⚽ Guard: ungrounded transliteration token "${token}" (skeleton "${s}") — matches nothing in article data.`);
+      return token;
+    }
+  }
+  return null;
+}
+
+// All stems of a normalized Arabic token that could realistically be a known
+// word: the token itself, the token without the definite article, and each
+// progressively suffix-trimmed form.
+function arabicStems(normTok) {
+  const out = new Set();
+  const SUFFIXES = ['وا', 'ها', 'ون', 'هم', 'هن', 'تا', 'نا', 'تم', 'ات', 'ان', 'ين', 'و', 'ه', 'ا', 'ي', 'ن'];
+  const forms = [normTok, normTok.replace(/^ال/, '')];
+  // Strip common single-letter prepositions/particles that fuse into words:
+  // ل (for), و (and), ب (with), ك (like), ف (then), س (will).
+  for (const pre of ['ل', 'و', 'ب', 'ك', 'ف', 'س']) {
+    if (normTok.startsWith(pre) && normTok.length - 1 >= 3) {
+      const rest = normTok.slice(1);
+      forms.push(rest, rest.replace(/^ال/, ''));
+    }
+  }
+  for (const f of forms) {
+    out.add(f);
+    let cur = f.replace(/^ال/, '');
+    out.add(cur);
+    for (let round = 0; round < 3; round++) {
+      const s = SUFFIXES.find((sfx) => cur.endsWith(sfx) && cur.length - sfx.length >= 3);
+      if (!s) break;
+      cur = cur.slice(0, -s.length);
+      out.add(cur);
+      out.add(cur.replace(/^ال/, ''));
+    }
+  }
+  return out;
+}
+
 /**
  * Domain guard for the generated caption. Two layers:
  *   1. Anchoring: if the caption starts with our own match header (FT/LIVE/
@@ -1085,6 +1235,9 @@ async function isFootballOnly(text, ctx) {
   }
   // Name-grounding: any tracked club/star/manager must come from the data.
   if (findUngroundedName(text, ctx)) return false;
+  // Transliteration-grounding: unknown name-like tokens must romanize back to
+  // a word in the article data (catches brand-new invented names).
+  if (findUngroundedTransliteration(text, ctx)) return false;
   try {
     const label = await chatComplete({
       systemPrompt:
@@ -1160,7 +1313,7 @@ export async function generatePostText(type, ctx) {
     let t = await make(false);
     if (tpl.footballOnly !== false) {
       for (let attempt = 1; attempt <= 3; attempt++) {
-        const bad = findUngroundedName(t, ctx);
+        const bad = findUngroundedName(t, ctx) || findUngroundedTransliteration(t, ctx);
         const pass = await isFootballOnly(t, ctx); // includes the name check
         if (pass && !bad) return t;
         console.warn(`⚽ Guard: flag (${bad || 'domain'}) — regenerating (${attempt}/3)...`);
