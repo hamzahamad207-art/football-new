@@ -789,7 +789,12 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // Up to 5 total attempts: 429s/5xx/network retry with growing backoff
+  // ([2.5s, 5s, 10s, 20s]), and empty content retries within the same loop.
+  // (A previous `attempt <= 3` bound silently quit after the 3rd 429 and
+  // threw a misleading "after 2 attempts" error — the guard below checks
+  // `attempt < 5`, so the loop must run to 5.)
+  for (let attempt = 1; attempt <= 5; attempt++) {
     let res;
     try {
       res = await fetch(url, {
@@ -848,9 +853,9 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
     const data = await res.json();
     const text = data?.choices?.[0]?.message?.content?.trim();
     if (text) return text;
-    console.warn(`⚠️  LLM returned empty content (attempt ${attempt}/2). Retrying...`);
+    console.warn(`⚠️  LLM returned empty content (attempt ${attempt}/5). Retrying...`);
   }
-  throw new Error('LLM returned empty content after 2 attempts');
+  throw new Error('LLM returned empty content after 5 attempts');
 }
 
 // Hard football vocabulary used by the deterministic domain check — a caption
