@@ -9,12 +9,15 @@ what changed; AGENTS.md is the permanent knowledge.
 
 - **Repo**: `hamzahamad207-art/football-new` (public). Local checkout:
   `football-new-main/football-new-main/`.
-- **HEAD**: `e106747` — "image: filter likely-kid URLs (kids/children/youth)
-  in both article and stock photo paths". **Working tree clean**
-  (`git status` → "nothing to commit, working tree clean").
-- **Branch**: `main`, up to date with `origin/main`.
+- **HEAD**: `c87857f` — "feat: make closing question optional + strengthen
+  fact-grounding guards". **Working tree clean** (`git status` → "nothing to
+  commit, working tree clean").
+- **Branch**: `main`. NOTE: the local `main` is **ahead of `origin/main`** by
+  this commit — it has NOT been pushed yet (the user runs the bot via GitHub
+  Actions, so the code must be pushed before the next workflow run picks it up).
 - **Node not available locally** — JS changes are validated by running the
-  GitHub Actions workflow, never locally.
+  GitHub Actions workflow, never locally. No syntax check was run; review the
+  diff carefully or kick a dry-run before posting.
 - **What works (tested end-to-end via dry-runs)**: all 7 content types run,
   captions generate in Khaleeji Arabic, real photos are picked, the Arabic
   headline overlay is applied and the composed image is pushed to `out/`
@@ -23,71 +26,64 @@ what changed; AGENTS.md is the permanent knowledge.
   set.
 - **LLM**: free tier (`glm-4.7-flash` pinned via `LLM_MODEL` secret) — 429s are
   frequent but handled by the 5-attempt retry loop.
-- **Last verified dry-run** (news): headline "Celtic to rekindle Gineitis move
-  in January" → Arabic caption → composed `tl-1789893925286.jpg` pushed and
-  preview URL printed.
+- **Last verified dry-run**: before this session — "Celtic to rekindle Gineitis
+  move in January" → Arabic caption → composed `tl-1789893925286.jpg`. That
+  run exposed the caption-integrity bugs this session is fixing (see §2).
 
 ## 2. Session Summary (what was done this session)
 
-Goal: make the bot produce TouchlineX-style Khaleeji Arabic posts with **real
-photos that carry Arabic text** (user requirement: "if there's gonna be text
-on the images, it should be translated in arabic — the image should be redone
-so it has arabic text instead of english"), with **zero invented facts/names**,
-100% Arabic output, and dry-run protection.
+Goal (user request): **remove the mandatory closing question** — captions
+should just be engaging, with a question only when it adds engagement. Plus the
+standing backlog: fix the caption guardrails that let the Celtic→Chelsea
+disaster through, and commit the reviewed-but-lost normalizers/derby/grammar
+rules.
 
-**Shipped in this session** (commits, newest first in git log):
+**Shipped in this session** (`c87857f`):
 
-- `e106747` — kid-image filter: `isLikelyKidImage()` rejects URLs containing
-  `kid|chil|youth|minor` in both article and Openverse stock paths.
-- `74a607a` — first-line Latin guard: `isFootballOnly` flags Latin in line 1
-  unless a verbatim `FT:/LIVE:/HT:/ET:/NEXT:/BREAKING:/CLOSE:` typed header
-  (blocks English leaking into quote/meme headlines → prevents English on the
-  composed image).
-- `01851ce` — strip leftover markdown asterisks from captions (`clean()`).
-- `2e276f3` — network-timeout retries also run to attempt 5 (was throwing on
-  attempt 3).
-- `151d80d` — skip transliteration-grounding when no article data (stops regen
-  thrash on meme/quote/analysis posts).
-- `382e555` — compose-image push rebases onto `origin/main` before each push
-  (fixes `! [rejected] HEAD -> main (fetch first)` race); strip stray quotes
-  from overlays/captions.
-- `38b4e17` — LLM retry loop runs all 5 attempts (3rd 429 was silently giving
-  up; guard checks `attempt < 5` so the loop must reach 5).
-- `307afd3` — **Arabic text overlay:** `src/overlay.js` (Tajawal font embedded
-  as a data: URI in an SVG + sharp; librsvg/Pango handles RTL shaping), wired
-  into `src/index.js`, image hosted by pushing to `out/`.
-- `79fecbf`, `1a5cad1`, `697145a`, `1cf31cf`, `2117f33`, `b2280c1`, `b0459c8`,
-  `232a520`, `ddd519e`, `731cfb7`, `fb4e9bb`, `645895c` — earlier guard/quality
-  work: vocabulary allowlists, headline-verb allowlist, 5x 429 backoff + 700ms
-  pacing, skip classifier when anchored, keep draft on mid-flight 429, allow
-  `رأيكم`/`ذهول` + pronoun suffixes, stems-as-array fix, transliteration
-  grounding, ban example-club leakage, gibberish-token scoring penalty, ranking
-  top-league reports, 90s LLM timeout + network retry.
-
-**Also in this session**: a dry-run was run that picked "Celtic to rekindle
-Gineitis move in January". The caption it produced contained errors the user
-flagged (see §6 Unverified / §7 Next Steps) but the run itself completed and
-pushed its composed image.
+- **Closing question is now optional everywhere.** All templates
+  (`templates.js`) now instruct an *engaging* closing line (sharp remark,
+  prediction, or a natural question) instead of "must end with a question".
+  The news system prompt got a 4th shape example that ends WITHOUT a question.
+  `scorePost`'s question-ending bonus dropped from +4 to +2 (still slightly
+  preferred between two draws, never required).
+- **First-line grounding fix (the Celtic→Chelsea gap).** `findUngroundedName`
+  now scans the **whole caption, first line included**. The old code assumed
+  the first line was the article title; since trending-news posts now render an
+  Arabic headline, an invented club *in the headline itself* (عودة تشيلسي…)
+  slipped past the body-only scan. Also added to the guard's ground truth:
+  `ctx.topic`.
+- **Derby/clásico rule now enforced.** New `findUngroundedClasico`: the word
+  الكلاسيكو is only allowed when the article data covers both Real Madrid and
+  Barcelona (topic escape hatch: a topic literally about الكلاسيكو is allowed).
+  Otherwise it's flagged and the regen nudge steers the model to
+  ديربي/المواجهة الكبيرة. Wired into `isFootballOnly` and the guarded draw.
+- **Name normalizers + entity aliases committed.** New `normalizeNames()`:
+  موهريو→مورينيو, وسيميون→وسيميوني, and الدي→الشولو (the last one only when
+  the story is about Simeone/Atlético — unconditional replacement would mangle
+  الدي as a typo of الذي/التي). `NAMED_ENTITIES` extended: Mourinho now knows
+  موهريو; new Simeone/El Cholo pair
+  (وسيميوني/سيميوني/الشولو/الدي/simeone/el cholo).
+- **Smarter regeneration nudge.** `buildRegenNudge` replaces the old generic
+  "ban the name" note: it now tells the model the story's actual topic, to copy
+  club/role names verbatim from the data (don't replace one club with another;
+  midfielder stays a midfielder), and to use an engaging close.
+- **Prompt-level precision + grammar.** News rules (12) name/role-exactness and
+  (13) verb-agreement guidance added ("المباراة ما تنتهي", not "ما ينتهي");
+  `scorePost` gained a narrow penalty for that exact slip
+  (`(المباراة|المواجهة|الجولة|المرحلة)\s+ما ينتهي`). Grammar is a scoring
+  bias only — there is still no full verb-agreement validator (see §5.6).
 
 ## 3. Decisions & Rationale
 
 | Decision | Why | Alternatives considered |
 |---|---|---|
-| **Arabic overlay instead of translating baked-in image text** | Real photos can't have their English studio graphics pixel-translated without AI editing (banned). TouchlineX-style "redo" = keep the real photo, stamp Arabic headline text as the new bottom band. | OCR+inpainting (impossible reliably, AI editing banned); rejecting all text-bearing images (none clean enough on Openverse). |
-| **Tajawal font embedded as `data:` URI in the SVG** | `sharp` renders SVG via librsvg; Pango needs an actual font to shape Arabic ligatures/RTL. Embedding as base64 in `@font-face src:url(data:font/ttf;base64,...)` makes it work without any system font install. | system-installed font (worked on the runner but not guaranteed/portable). |
-| **5 retries with growing backoff `[2.5s, 5s, 10s, 20s]`** | Free-tier Z.ai 429s (code 1305) are constant; old `attempt <= 3` loop contradicted the `attempt < 5` guard and silently quit. 5 attempts keeps runs rare-failure. | 3 attempts (failed); infinite retry (run time explodes). |
-| **Compose-image push rebases onto origin/main** | Every run pushes to the same repo; concurrent/consecutive runs advance `main` and a straight push is rejected. `pull --rebase origin main` then `push origin HEAD:main`, 4 attempts. | Straight push (failed with `! [rejected] HEAD -> main`). |
-| **Images go through the repo `out/` + raw.githubusercontent URL** | Threads API requires a publicly reachable `image_url`; the composed JPEG isn't online anywhere else. The repo is public, so `main/out/tl-*.jpg` works. | Third-party image hosts (account/size constraints, unreviewed). |
-| **740ms pacing (700ms in code) between LLM calls** | Free tier trips 429s when caption draws + regens + classifier fire back-to-back (~16 calls/run). | No pacing (chronic 429s); faster pacing (user-approved 700ms kept). |
-| **`findUngroundedTransliteration` returns null when no article data** | Canned types have no English ground truth; grounding every token would flag real Khaleeji verbs and force 3 regens every time. | Running it regardless (regen thrash). |
-| **First-line Latin banned unless verbatim typed header** | The first line becomes the composed image's headline; English there = English on the image (user requirement). | Allow Latin anywhere (violates requirement). |
-| **`isLikelyKidImage` string filter** | User: "THE IMAGE IS TERRIBLE. it's of kids!!" — cheap deterministic filter. | ML image classification (no model budget, nothing installed). |
-| **BBC Arabic excluded from NEWS_FEEDS** | Its feed mixes general/politics news, risk of non-football posts. | Including it (bad posts). |
-| **ESPN data first, trending RSS second** (for news) | Live/recent matches with API-given scores are the most factually-anchored; trending headlines are fallback with article summary + photos. | Canned topics for news (let the model invent garbage). |
-| **Two independent caption draws for news, keep the better score** | Smooths out free-tier gibberish-token glitches (e.g. `_performance`). | Single draw (higher glitch rate). |
-| **`thinking: { type: 'disabled' }` for Z.ai endpoints** | GLM-4.5+ spends the token budget on reasoning content, leaving `content` empty. | Nothing (first run broke on empty content). |
-| **`--post` aborts without an image** | TouchlineX-style posts must ship with a photo. | Text-only publish (user doesn't want it). |
-| **Manual `workflow_dispatch` with `dry_run` default true** | User runs workflows manually; safe-by-default posting. | Scheduled auto-posting (off by default, commented out in `post.yml`). |
+| **Closing question optional** (all templates) | User: "remove the mandatory question at the end. just make the caption engaging and if its more engaging with a question then add it." Mandatory questions made every post look templated. | Keeping the mandate (user rejected); banning questions outright (user wants them when natural). |
+| **Full-caption name grounding (incl. line 1)** | An invented club in the Arabic headline escaped the old body-only scan (the old "first line IS the article title" assumption died when headlines went Arabic). `ground` now also includes `ctx.topic`. | Body-only scan (proven insufficient); separate headline scan (redundant — one pass is simpler). |
+| **`الكلاسيكو` distributed as a guard + nudge** | User rule: "It's 'derby,' not 'el clásico,' for non-RM-Barça." A hard regex guard is the only reliable way to enforce it. | Prompt-only instruction (model ignores it under free-tier pressure); text replacement `الكلاسيكو→المواجهة الكبيرة` (too blunt — would mangle genuine clásicos). |
+| **`normalizeNames` applied inside `make()`** | Fixes are applied to every draw, so the *accepted* caption and its overlay headline always carry the corrected spelling. | Fixing only the final text (missed regen drafts and could double-apply). |
+| **`الدي→الشولو` gated on Simeone context** | Unconditional replacement mangles الدي as a typo of الذي/التي in unrelated captions. | Unconditional replace (rejected — too risky). |
+| **Smarter regen nudge (topic + verbatim names/roles)** | Banning the wrong name alone didn't fix the Celtic→Chelsea loop; telling the model the real topic and to copy names/roles verbatim gives regens a real chance. | Old generic nudge (proved weak). |
+| **Grammar as scoring bias, not hard validator** | A full Arabic verb-agreement validator without a grammar library is unreliable. The narrow feminine-subject pattern only biases which draw wins — zero risk of false rejection. | Hard rejection regex (false-positive risk); nothing (slips survive). |
 
 ## 4. Tried and Rejected
 
@@ -178,40 +174,56 @@ error/symptom, why it failed, what we learned.
     Decision: exclude it; use BBC *Sport*, Sky Sports, Google News.
     **Learned**: scope all feeds to football.
 
+14. **Body-only name grounding** — Symptom: invented clubs in the Arabic
+    headline (the Celtic→Chelsea caption opened with عودة تشيلسي…) escaped
+    `findUngroundedName` because it stripped line 1. Fix: scan the entire
+    caption including the first line. **Learned**: the first line is not
+    "always the article title" anymore — it's the model's own Arabic headline,
+    and must be grounded like everything else.
+
+15. **Unconditional `الدي`→`الشولو` replacement** — Rejected *before* commit:
+    in captions not about Simeone, `الدي` is usually a typo of `الذي`/`التي`
+    and blind replacement corrupts them. Fix: replace only when the story is
+    Simeone/Atlético-related (`normalizeNames` context gate). **Learned**:
+    text normalizers need context gates, not global regexes.
+
 ## 5. Known Issues / Open Bugs
 
 1. **LLM occasionally produces flawed captions that pass guardrails.**
-   A dry-run produced "عودة تشيلسي لاستكمال صفقة جينيتيس في شهر يناير" for a
-   Celtic transfer story — wrong club (Chelsea vs Celtic), wrong position
-   (called a midfielder a "defender"), and a wrong manager context — yet the
-   guards (name-grounding, transliteration) didn't catch all of it.
-   **How to reproduce**: run `news` type repeatedly; pick a run whose topic
-   involves a transfer/player. Not deterministic.
+   The Celtic→Chelsea failure was addressed this session (first-line grounding
+   + role-exactness nudges + smarter regen nudge), but guardrails are still
+   probabilistic: an entirely-new wrong name that is neither tracked nor
+   romanizable can still survive. **How to reproduce**: run `news` type
+   repeatedly; pick a run whose topic involves a transfer/player. Not
+   deterministic.
 2. **Guard "accept as-is" escape hatch.** After 3 regens a still-flagged
    caption is accepted as-is (`⚽ Guard: caption still flagged after 3 attempts
    — accepting as-is.`). Combined with (1), bad captions can be published when
    the user unchecks dry-run. This is intentional (must post something) but
-   risky.
+   risky. The smarter nudge hopefully makes regens land more often.
 3. **429 storms can interrupt a mid-run regeneration.** The "Regeneration
    interrupted after retries … using last caption" path keeps the previous
    caption even if it was flagged. Not an open bug per se — mitigation for
    the free tier.
-4. **No Simeone/Mourinho spelling normalizers exist.** Mourinho's Arabic
-   (`مورينيو`) is correct in `NAMED_ENTITIES`; but proposed fixes like
-   `وسيميوني` for Simeone and `الشولو` for "El Cholo" were **never committed**.
-   Any caption from the LLM containing misspelled foreign names won't be
-   auto-corrected.
-5. **Derby/clásico mislabeling not yet guarded.** `الكلاسيكو` is only a vocab
-   word + fallback topic; there's no rule enforcing "derby ≠ el clásico
-   unless RM–Barça" in the prompts. (The earlier HANDOFF draft over-claimed
-   this fix — it is NOT in the code.)
-6. **No plural-verb grammar fix.** Proposed "ما ينتهي"→"ما تنتهي" check was
-   never added to `scorePost`; the code has no verb-agreement validation.
+4. **Name normalizers are narrow.** Only the reviewed set is committed
+   (Mourinho/Simeone/El Cholo). Other misspellings from future runs will not
+   be auto-corrected — add them to `normalizeNames` + a `NAMED_ENTITIES` alias
+   when they surface.
+5. **Derby/clásico rule is enforced now**, but only as a guard + regen nudge.
+   If 3 regens fail, the accept-as-is path can still pass a الكلاسيكو misuse
+   through (rare — the nudge is explicit).
+6. **No full plural-verb grammar fix.** The narrow
+   `(المباراة|المواجهة|الجولة|المرحلة)\s+ما ينتهي` penalty handles the most
+   common slip; other agreement errors are still unvalidated. The news prompt
+   now also instructs agreement (rule 13).
 7. **`isLikelyKidImage` is URL-string based.** It can miss kids photos whose
    URLs don't contain kid/children/youth words, and can false-positive on
    unrelated words. Adequate but heuristic.
 8. **Node is not installed locally** — any new JS must be validated through
    the GitHub Actions workflow (each run ~4-5 min).
+9. **Local `main` is one commit ahead of `origin/main`** — `c87857f` (this
+   session's changes) has NOT been pushed. The next GitHub Actions run will use
+   the OLD code until it's pushed.
 
 ## 6. Unverified Claims & Things Needing a Human Check
 
@@ -221,12 +233,14 @@ error/symptom, why it failed, what we learned.
   eyeballed. **You must open a preview URL and confirm it looks right**, e.g.
   `https://raw.githubusercontent.com/hamzahamad207-art/football-new/main/out/tl-1789893925286.jpg`
   (latest news dry-run) and `.../out/tl-1789891171454.jpg` (earlier news run).
+- **THIS SESSION'S CHANGES ARE UNVERIFIED END-TO-END.** `c87857f` (optional
+  question endings, full-caption grounding, clasico guard, normalizers) has
+  NOT been run in CI yet. It needs a dry-run after being pushed to confirm:
+  captions end engagingly (sometimes without a question), no new false-positive
+  regen loops, and normalizers don't mangle text.
 - **The "Genesis" جيل زد test post**: UNKNOWN whether an early test post
   actually published to Threads. If it did, it needs to be deleted from the
   page. Please check your Threads profile.
-- **Second dry-run caption was accepted despite flags** — the exact post text
-  and image for the Gineitis/Celtic run (`tl-1789893925286.jpg`) are
-  UNVERIFIED for correctness; it was a dry-run so nothing was published.
 - **Threads publishing path** (`postToThreads` with real image URL) has been
   written but its success end-to-end after the overlay feature is UNVERIFIED —
   the last confirmed live post predates the overlay changes. A publish run
@@ -237,21 +251,10 @@ error/symptom, why it failed, what we learned.
 
 ## 7. Next Steps (prioritized)
 
-1. **Fix caption spelling/misnaming guardrails in code** (from the Gineitis
-   review). Not committed:
-   - Club-name grounding is weak for transfer stories where the article's
-     teams aren't in `NAMED_ENTITIES`. Consider adding a "the club in the
-     headline is the subject" rule: if the article is about Celtic, `تشيلسي`
-     (a known entity!) should be caught by `findUngroundedName` once Celtic
-     is in the data — verify why it wasn't.
-   - Player position accuracy: the prompt already says don't invent facts;
-     consider instructing the model to reflect the exact wording of the recap
-     (midfielder, not defender) rather than paraphrasing roles.
-   - Add name normalizer suggestions: `موهريو`→`مورينيو`, `وسيميون`→`وسيميوني`,
-     `الدي`→`الشولو`, plus a "derby not clásico" rule
-     (`الكلاسيكو` only for RM–Barça; else `المواجهة الكبيرة`) and plural-verb
-     agreement (`ما تنتهي`). These were reviewed and approved but never
-     committed.
+1. **Push `c87857f` and run a dry-run in CI** to validate this session's
+   changes (engaging endings without forced questions; no regen thrash from the
+   new guards; normalizers working). Watch for new false positives from the
+   full-caption grounding on canned types.
 2. **Confirm the latest composed image** (`tl-1789893925286.jpg` or the next
    fresh dry-run) — open the preview URL and verify the Arabic overlay looks
    correct.
@@ -260,9 +263,11 @@ error/symptom, why it failed, what we learned.
 4. **On explicit user approval** of a specific post, run the workflow with
    `dry_run` unchecked, then confirm the post is live on Threads (also
    verifies the real publish path with the overlay).
-5. **Flush old composed images?** `out/` grows by one image per run. Allowed,
+5. **Collect new failure samples.** Each run may surface new misspellings /
+   guard gaps: add them to `normalizeNames` + `NAMED_ENTITIES` / allowlists.
+6. **Flush old composed images?** `out/` grows by one image per run. Allowed,
    but review disk/repo size periodically; optionally prune old `tl-*.jpg`.
-6. **Consider a scheduled cron** (commented out in `post.yml`) only if the
+7. **Consider a scheduled cron** (commented out in `post.yml`) only if the
    user asks — for now posting is manual.
 
 ## 8. My Preferences (the user)
@@ -275,6 +280,9 @@ error/symptom, why it failed, what we learned.
 - **No invented facts.** It's "derby," not "el clásico," for non-RM-Barça.
   Fix spelling of names/nicknames. No made-up names, scores, positions, or
   quotes.
+- **Captions should be engaging, not formulaic.** NO mandatory closing
+  question anymore (since this session): make the caption engaging, and only
+  add a question if it makes the post more engaging.
 - **Real photos only, never AI.** If there's no image, don't post
   (`--post` must abort). No kids images.
 - **I run workflows manually** by clicking "Run workflow" on the GitHub repo —
