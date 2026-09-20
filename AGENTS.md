@@ -46,10 +46,16 @@ Step-by-step (each step's file):
 2. **LLM caption** — `generatePostText(type, ctx)` in `src/content.js` calls
    the OpenAI-compatible chat-completions endpoint (`chatComplete`). System +
    user prompts come from `src/templates.js`. Post text is cleaned, guarded,
-   and (for `news`) twice-drawn with the better caption kept.
+   and (for `news`) twice-drawn with the better caption kept — except when the
+   first draw passes every guard cleanly, in which case the second draw is
+   skipped (the slow reasoning model dominates runtime).
 3. **Image picking** — `pickImageForContent(type, ctx)` in `src/images.js`.
-   Article photos (og:image / JSON-LD) first, then CC stock photos from the
-   Openverse API. Every candidate is validated as a fetchable image file, and
+   For match-report news, the article's own photos (og:image / JSON-LD) come
+   first; for trending/rumour news, clean CC stock photos come first (article
+   images there are often TV/newspaper graphics with baked-in English text —
+   e.g. a big "GOSSIP" banner — which can't be pixel-translated). Stock
+   candidates come from Openverse, ordered HD-first (widest sources first).
+   Every candidate is validated as a fetchable image file (min ≈30KB), and
    URLs containing kid/children/youth are rejected.
 4. **Arabic overlay** — `applyArabicOverlay(imageUrl, text)` in `src/overlay.js`
    downloads the real photo, renders the post's Arabic first line onto it with
@@ -71,7 +77,7 @@ Defined in `CONTENT_TYPES` in `src/templates.js`:
 
 | type | Arabic label | Purpose | Special behavior |
 |---|---|---|---|
-| `news` | أخبار | Latest match / trending headline | Grabs live ESPN match first, else trending RSS headline. Draws 2 captions, keeps the better-scored one. Header is a verbatim FT:/LIVE:/NEXT: line OR a short Arabic headline. |
+| `news` | أخبار | Latest match / trending headline | Grabs live ESPN match first, else trending RSS headline (skips stories already posted). Draws 2 captions unless the first passes all guards cleanly. Header is a verbatim FT:/LIVE:/NEXT: line OR a short Arabic headline. |
 | `stats` | إحصائيات | A stat/record | Canned topic; optional recap from context. Starts with the number. `footballOnly` guard applies. |
 | `analysis` | تحليل | Tactical breakdown | Canned topic; optional recap. |
 | `meme` | سخرية | Short Khaleeji joke | No fresh news needed (`newsQuery: () => null`). |
@@ -124,9 +130,9 @@ Repo root: `football-new-main/football-new-main/`
 
 | File | What it does | Key functions |
 |---|---|---|
-| `src/index.js` | CLI orchestrator; arg parsing, main flow, abort-without-image, `--republish` (re-post last saved post) | `parseArgs`, `printHelp`, `loadLastPost`, `main` |
-| `src/content.js` | Context resolution (ESPN/RSS/trending), LLM call, caption guards, caption scoring | `fetchNewsContext`, `chatComplete`, `generatePostText`, `isFootballOnly`, `findUngroundedName`, `findUngroundedTransliteration`, `findUngroundedClasico`, `normalizeNames`, `buildRegenNudge`, `arabicStems`, `scorePost`, `unknownTokenCount`, `containsFootballVocab`, `fetchTrendingHeadlines`, `fetchCurrentMatches`, `annotateMatch`, `enrichArticle`, `fetchMatchArticle`, `scoreHeaderFromTitle`, `resultArabic`, `fetchMatchFacts`, `normText`, `arSkel`, `enSkel`, `lev` (Levenshtein) |
-| `src/images.js` | Pick a real, fetchable photo; article-first; stock fallback; kid-image filter | `pickImageForContent`, `searchImage`, `isValidImageUrl`, `isLikelyKidImage`, `isBlocked`, `buildImageQuery`, `toEnglishKeywords`, `shuffle`, `flickrId` |
+| `src/index.js` | CLI orchestrator; arg parsing, main flow, abort-without-image, `--republish` (re-post last saved post), news-seen history persistence | `parseArgs`, `printHelp`, `loadLastPost`, `loadNewsSeen`, `main` |
+| `src/content.js` | Context resolution (ESPN/RSS/trending), LLM call, caption guards, caption scoring, story-dedupe | `fetchNewsContext`, `chatComplete`, `generatePostText`, `isFootballOnly`, `findUngroundedName`, `findUngroundedTransliteration`, `findUngroundedClasico`, `normalizeNames`, `buildRegenNudge`, `arabicStems`, `scorePost`, `unknownTokenCount`, `containsFootballVocab`, `fetchTrendingHeadlines`, `fetchCurrentMatches`, `annotateMatch`, `enrichArticle`, `fetchMatchArticle`, `scoreHeaderFromTitle`, `resultArabic`, `fetchMatchFacts`, `normText`, `arSkel`, `enSkel`, `lev` (Levenshtein), `newsTitleKey`, `newsSeenBlocked` |
+| `src/images.js` | Pick a real, fetchable, HD photo; match-news article-first, trending-news stock-first; kid-image filter | `pickImageForContent`, `searchImage`, `isValidImageUrl`, `isLikelyKidImage`, `isBlocked`, `buildImageQuery`, `newsImageQuery`, `toEnglishKeywords`, `flickrId` |
 | `src/overlay.js` | Arabic text overlay (Tajawal font via SVG + sharp) + repo hosting + last-post persistence | `applyArabicOverlay`, `prepOverlayText`, `pushComposedImage(file, meta)`, `ensureArabicFont`, `wrapLines`, `escapeXml` |
 | `src/templates.js` | Content templates (system/user prompts), fallback topics, leagues | `TEMPLATES`, `FALLBACK_TOPICS`, `LEAGUES`, `CONTENT_TYPES`, `pickRandom` |
 | `src/threads.js` | Threads Graph API client | `createMediaContainer`, `publishMedia`, `postToThreads`, `getThreadsConfig` |
@@ -148,7 +154,8 @@ Repo root: `football-new-main/football-new-main/`
   `ARABIC_WORDS` (allowlist set used for scoring), `FOOTBALL_TERMS` (hard
   deterministic vocabulary check).
 - `images.js`: `BASE_QUERIES` per content type, `AR_TO_EN` (Arabic→English
-  keyword table for Openverse), `BLOCKED_IDS` (off-topic Flickr photo IDs).
+  keyword table for Openverse), `BLOCKED_IDS` (off-topic Flickr photo IDs),
+  `IMAGE_STOP` (tokens too generic to search with).
 
 ## 6. Config
 
@@ -280,6 +287,17 @@ letters), no English on the image, no emoji/quote-marks on the headline.
 - **`الكلاسيكو` is reserved for RM–Barça.** `findUngroundedClasico` flags the
   word in any caption whose article data doesn't cover both clubs, and the
   regen nudge steers the model to ديربي/المواجهة الكبيرة.
+- **Repeats and graphic article images are separate problems.** A persistent
+  `out/news-seen.json` (recorded on every composed run, 60-day window, 200
+  entries max) blocks re-posting a story — exact normalized title key OR ≥2
+  shared significant tokens ("Celtic: Gineitis deal close" vs "Celtic renew
+  Gineitis bid"). Trending-rumour articles often ship TV-graphic og:images ("GOSSIP"
+  banner over a player) that no Arabic overlay can fix — for trending news the
+  picker prefers CC stock photos (HD-first) and keeps article images only as a
+  fallback.
+- **HD-first picking.** Openverse results are sorted widest-first and the URL
+  validator rejects files <30KB, so picks trend toward real high-res photos; a
+  small random start offset keeps variety without bringing back tiny thumbnails.
 - **The agent can't see images.** Overlay/Arabic-rendering quality must be
   confirmed by the user via the preview URL. Never claim an image "looks
   correct" without a human check.

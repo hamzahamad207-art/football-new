@@ -267,13 +267,22 @@ export async function pushComposedImage(file, meta = null) {
   // best-effort commit, so a hiccup here never blocks the already-pushed image.
   if (meta && meta.text) {
     try {
+      // last-post.json must not carry the bookkeeping-only extraFiles field.
+      const { extraFiles: _xf, ...postMeta } = meta;
       await fs.writeFile(
         path.join(outDir, 'last-post.json'),
-        JSON.stringify({ ...meta, imageUrl: url }, null, 2)
+        JSON.stringify({ ...postMeta, imageUrl: url }, null, 2)
       );
+      // Extra persisted files (out/news-seen.json for story dedupe) ride along
+      // in the same commit so one push covers all bookkeeping.
+      const extra = Object.entries(meta.extraFiles || {});
+      for (const [name, content] of extra) {
+        await fs.writeFile(path.join(outDir, name), content);
+      }
+      const staged = ['--', 'out/last-post.json', ...extra.map(([n]) => `out/${n}`)];
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          await git(['add', '--', 'out/last-post.json']);
+          await git(['add', ...staged]);
           try {
             await git([
               '-c', 'user.name=Touchline AR Bot',

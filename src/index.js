@@ -10,7 +10,7 @@
 //   BOT_TOPIC="Barça vs Sevilla" node src/index.js -t analysis --post
 
 import { CONTENT_TYPES, pickRandom, TEMPLATES } from './templates.js';
-import { fetchNewsContext, generatePostText } from './content.js';
+import { fetchNewsContext, generatePostText, newsTitleKey } from './content.js';
 import { pickImageForContent } from './images.js';
 import { postToThreads } from './threads.js';
 import { applyArabicOverlay, pushComposedImage } from './overlay.js';
@@ -101,6 +101,17 @@ function loadLastPost() {
   return post;
 }
 
+/** Load the previously-posted story history (out/news-seen.json), if any. */
+function loadNewsSeen() {
+  try {
+    const raw = readFileSync(path.join(process.cwd(), 'out', 'news-seen.json'), 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   if (args.listTypes) {
@@ -146,8 +157,10 @@ async function main() {
   console.log(`Mode: ${args.post ? 'LIVE POST' : 'DRY RUN'}`);
   console.log(`──────────────────────────────`);
 
-  // 1. Fetch news / context (pass topic override if provided)
-  const ctx = await fetchNewsContext(type, { topicOverride: args.topic });
+  // 1. Fetch news / context (pass topic override if provided). News runs also
+  // carry the history of previously-posted stories so the picker skips repeats.
+  const history = type === 'news' ? loadNewsSeen() : [];
+  const ctx = await fetchNewsContext(type, { topicOverride: args.topic, history });
   console.log(`📋 Topic: ${ctx.topic}`);
   if (ctx.header) console.log(`   Header: ${ctx.header}`);
   if (ctx.summary) console.log(`   Summary: ${ctx.summary.slice(0, 100)}...`);
@@ -169,6 +182,18 @@ async function main() {
     try {
       const composed = await applyArabicOverlay(imageUrl, headerText);
       if (composed) {
+        // Remember which story we posted so future news runs skip it (exact
+        // topics the user typed are their explicit choice — never recorded).
+        const extraFiles = {};
+        if (type === 'news' && !args.topic) {
+          const key = newsTitleKey(ctx.topic || '');
+          let next = [...history];
+          if (key && !next.some((e) => e && e.key === key)) {
+            next = [{ title: ctx.topic || '', key, ts: Date.now() }, ...next];
+          }
+          next = next.slice(0, 200);
+          extraFiles['news-seen.json'] = JSON.stringify(next, null, 2);
+        }
         // Save the post alongside the hosted image so `--republish` can post
         // this exact caption + image later without regenerating anything.
         const meta = {
@@ -176,6 +201,7 @@ async function main() {
           type,
           topic: ctx.topic || '',
           text,
+          extraFiles,
         };
         const previewUrl = await pushComposedImage(composed.file, meta);
         if (previewUrl) {

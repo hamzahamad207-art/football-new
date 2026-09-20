@@ -28,6 +28,12 @@ All text is in **Khaleeji (Gulf) Arabic** with the tone of a casual fan
 account — short, punchy, opening with a strong headline and closing with an
 engaging line (a question only when it makes the post more engaging).
 
+The bot **never repeats a story** — a history in `out/news-seen.json` blocks
+the same team/player headline from being picked twice. Images are **real CC
+photos only** (never AI), with **HD sources preferred**, and TV-graphic article
+images (e.g. a "GOSSIP" banner) are avoided for trending news in favor of clean
+stock photos.
+
 ---
 
 ## Project layout

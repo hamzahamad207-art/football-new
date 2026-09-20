@@ -170,7 +170,7 @@ async function enrichArticle(item) {
         'User-Agent': 'TouchlineARBot/2.0 (Threads football page)',
       },
       redirect: 'follow',
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(6000),
     });
     if (!res.ok) return out;
     const html = await res.text();
@@ -255,7 +255,7 @@ async function enrichArticle(item) {
  * on total failure — the caller then fails cleanly instead of posting
  * stale/guessed material.
  */
-async function fetchTrendingHeadlines() {
+async function fetchTrendingHeadlines(history = []) {
   const settled = await Promise.allSettled(
     Object.entries(NEWS_FEEDS).map(async ([name, feed]) => {
       const items =
@@ -266,6 +266,7 @@ async function fetchTrendingHeadlines() {
 
   const seen = new Set();
   const all = [];
+  let skipped = 0;
   for (const r of settled) {
     if (r.status !== 'fulfilled') {
       console.warn(`⚠️  News feed failed: ${r.reason?.message?.slice(0, 80) || 'unknown'}`);
@@ -291,6 +292,11 @@ async function fetchTrendingHeadlines() {
         .replace(/\s+/g, ' ')
         .trim();
       if (!key || seen.has(key)) continue;
+      // Skip stories this bot already posted (exact title or same entities).
+      if (newsSeenBlocked(it.title, history)) {
+        skipped++;
+        continue;
+      }
       seen.add(key);
       all.push({
         title: it.title,
@@ -310,10 +316,67 @@ async function fetchTrendingHeadlines() {
   if (top.length) {
     console.log(
       `🌐 Trending headlines: ${top.length} newest unique items ` +
-        `(sources: ${[...new Set(top.map((i) => i.source))].join(', ')})`
+        `(sources: ${[...new Set(top.map((i) => i.source))].join(', ')})` +
+        (skipped ? `, ${skipped} previously-posted skipped` : '')
     );
   }
   return top;
+}
+
+// ── Re-run protection: don't post the same story twice ───────────────────────
+// out/news-seen.json (persisted by index.js alongside the composed image)
+// lists { title, key, ts } entries. A headline is "already used" when its
+// normalized key matches exactly, or when it shares ≥2 significant tokens
+// with a recent entry — "Celtic: Gineitis deal close" vs "Celtic renew
+// Gineitis bid" are the same story spelled differently.
+
+const NEWS_STOP = new Set([
+  'football', 'soccer', 'news', 'report', 'reports', 'claims', 'claim',
+  'says', 'said', 'after', 'before', 'could', 'will', 'want', 'wants',
+  'club', 'clubs', 'season', 'transfer', 'transfers', 'deal', 'deals',
+  'target', 'targets', 'move', 'moves', 'linked', 'links', 'link',
+  'interest', 'eyes', 'return', 'returns', 'sign', 'signed', 'signs',
+  'january', 'summer', 'window', 'latest', 'live', 'score', 'scores',
+  'result', 'results', 'match', 'matches', 'game', 'games', 'team',
+  'teams', 'player', 'players', 'star', 'stars', 'pursuit', 'talks',
+  'talk', 'update', 'updates',
+]);
+
+export function newsTitleKey(title) {
+  return String(title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0600-\u06FF\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function significantTokens(title) {
+  const out = new Set();
+  for (const w of newsTitleKey(title).split(' ')) {
+    if (w.length >= 4 && !NEWS_STOP.has(w)) out.add(w);
+  }
+  return out;
+}
+
+/** True when this headline names a story we've already posted. */
+export function newsSeenBlocked(title, history) {
+  const arr = Array.isArray(history) ? history : [];
+  if (!arr.length) return false;
+  const key = newsTitleKey(title);
+  const tokens = significantTokens(title);
+  const now = Date.now();
+  for (const e of arr) {
+    if (!e || !e.key) continue;
+    if (e.ts && now - e.ts > 60 * 24 * 3600e3) continue; // stale stories re-allow
+    if (e.key === key) return true;
+    if (tokens.size >= 2) {
+      const other = significantTokens(e.title || e.key);
+      let shared = 0;
+      for (const t of tokens) if (other.has(t)) shared++;
+      if (shared >= 2) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -454,7 +517,7 @@ async function fetchMatchFacts(m) {
  * reports (result words / scores). Returns title, real summary + the article's
  * photos — or null when nothing fresh is found.
  */
-async function fetchMatchArticle(matchUp, teamNames) {
+async function fetchMatchArticle(matchUp, teamNames, history = []) {
   const names = teamNames.filter(Boolean);
   const query =
     `${matchUp ? `"${matchUp}" ` : ''}${names.map((t) => `"${t}"`).join(' ')} result`.trim();
@@ -484,7 +547,8 @@ async function fetchMatchArticle(matchUp, teamNames) {
             ) || AMERICAN_FOOTBALL_RE.test(it.title)
           )
       )
-      .sort((a, b) => b.date - a.date);
+      .sort((a, b) => b.date - a.date)
+      .filter((it) => !newsSeenBlocked(it.title, history));
 
     if (!candidates.length) return null;
 
@@ -646,6 +710,7 @@ async function findMatchForTopic(override) {
  */
 export async function fetchNewsContext(type, opts = {}) {
   const override = (opts.topicOverride || '').trim();
+  const history = opts.history || [];
 
   if (override) {
     // 1) Real fixture from ESPN's scoreboard — when its API is reachable.
@@ -694,7 +759,7 @@ export async function fetchNewsContext(type, opts = {}) {
       // its own photos (feed the image) — real, current, from the game played
       // recently, not a dated generic stock shot.
       if (type === 'news') {
-        const art = await fetchMatchArticle(live.matchUp, [live.homeName, live.awayName]);
+        const art = await fetchMatchArticle(live.matchUp, [live.homeName, live.awayName], history);
         if (art) {
           live.recap = art.description || live.recap;
           live.articleImage = art.image || null;
@@ -709,7 +774,7 @@ export async function fetchNewsContext(type, opts = {}) {
   }
 
   if (type === 'news') {
-    const headlines = await fetchTrendingHeadlines();
+    const headlines = await fetchTrendingHeadlines(history);
     if (headlines.length) {
       // Pick one story, then enrich it with the article's own summary + photos.
       // Prefer major men's top-league reports (Premier League, La Liga, …)
@@ -1467,6 +1532,7 @@ export async function generatePostText(type, ctx) {
   // can't survive).
   const guardedDraw = async () => {
     let t;
+    let regens = 0;
     try {
       t = await make('');
       if (tpl.footballOnly !== false) {
@@ -1476,9 +1542,10 @@ export async function generatePostText(type, ctx) {
             findUngroundedTransliteration(t, ctx) ||
             findUngroundedClasico(t, ctx);
           const pass = await isFootballOnly(t, ctx); // includes the name checks
-          if (pass && !bad) return t;
+          if (pass && !bad) return { text: t, clean: regens === 0 };
           console.warn(`⚽ Guard: flag (${bad || 'domain'}) — regenerating (${attempt}/3)...`);
           t = await make(buildRegenNudge(bad, ctx));
+          regens++;
         }
         console.warn('⚽ Guard: caption still flagged after 3 attempts — accepting as-is.');
       }
@@ -1488,26 +1555,33 @@ export async function generatePostText(type, ctx) {
       if (!t) throw err;
       console.warn(`⚠️  Regeneration interrupted after retries (${String(err?.message).slice(0, 90)}) — using last caption.`);
     }
-    return t;
+    return { text: t, clean: regens === 0 };
   };
 
   // Candidate A.
-  const a = await guardedDraw();
+  const a0 = await guardedDraw();
+  const a = a0.text;
   const sa = scorePost(a, ctx);
   let text = a;
 
-  // News posts: draw an independent second caption and keep the cleaner one,
-  // which smooths out the occasional gibberish token from the free model
-  // (e.g. the "_performance" / nonsense-word glitches). If the second draw fails
-  // (rate limit etc.), keep the first caption instead of failing the run.
+  // News posts: draw an independent second caption and keep the cleaner one —
+  // it smooths out the occasional gibberish token from the free model. But when
+  // candidate A cleared every guard on the FIRST try (no regen needed) there's
+  // nothing to smooth out, so skip draw B and save a slow model call. B still
+  // runs whenever A needed fixes (that's exactly when B helps most).
   if (type === 'news') {
-    try {
-      const b = await guardedDraw();
-      const sb = scorePost(b, ctx);
-      if (sb > sa) text = b;
-      console.log(`✨ Picked better of 2 generated captions (scores ${Math.max(sa, sb)}).`);
-    } catch (err) {
-      console.warn(`⚠️  Second caption draw skipped (${err.message?.slice(0, 80)}) — using first caption.`);
+    if (a0.clean) {
+      console.log('✨ First caption passed all guards cleanly — skipping second draw (faster).');
+    } else {
+      try {
+        const b0 = await guardedDraw();
+        const b = b0.text;
+        const sb = scorePost(b, ctx);
+        if (sb > sa) text = b;
+        console.log(`✨ Picked better of 2 generated captions (scores ${Math.max(sa, sb)}).`);
+      } catch (err) {
+        console.warn(`⚠️  Second caption draw skipped (${err.message?.slice(0, 80)}) — using first caption.`);
+      }
     }
   }
 
