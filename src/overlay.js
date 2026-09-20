@@ -208,7 +208,7 @@ export async function applyArabicOverlay(imageUrl, text) {
  * remote `main` can advance between our checkout and our push. We therefore
  * rebase onto origin/main before each push attempt and retry up to 4 times.
  */
-export async function pushComposedImage(file) {
+export async function pushComposedImage(file, meta = null) {
   const repoSlug = process.env.GITHUB_REPOSITORY || 'hamzahamad207-art/football-new';
   const [owner, repo] = repoSlug.split('/');
   const name = `tl-${Date.now()}.jpg`;
@@ -225,6 +225,7 @@ export async function pushComposedImage(file) {
       throw e;
     });
 
+  let url = null;
   for (let attempt = 1; attempt <= 4; attempt++) {
     // Make sure the image is committed (well no-op after the first attempt).
     try {
@@ -250,12 +251,53 @@ export async function pushComposedImage(file) {
       if (!String(r?.stderr || '').includes('Everything up-to-date')) {
         console.log(`   git push → ${name}`);
       }
-      return `https://raw.githubusercontent.com/${owner}/${repo}/main/out/${name}?v=${Date.now()}`;
+      url = `https://raw.githubusercontent.com/${owner}/${repo}/main/out/${name}?v=${Date.now()}`;
+      break;
     } catch (e) {
       console.warn(`   push attempt ${attempt} failed: ${String(e?.gitErr || e).slice(0, 140)}`);
       await new Promise((r) => setTimeout(r, 2500));
     }
   }
-  console.warn('⚠️  Could not push composed image after retries — posting original photo instead.');
-  return null;
+  if (!url) {
+    console.warn('⚠️  Could not push composed image after retries — posting original photo instead.');
+    return null;
+  }
+
+  // Persist the last generated post (for `--republish`) as a separate
+  // best-effort commit, so a hiccup here never blocks the already-pushed image.
+  if (meta && meta.text) {
+    try {
+      await fs.writeFile(
+        path.join(outDir, 'last-post.json'),
+        JSON.stringify({ ...meta, imageUrl: url }, null, 2)
+      );
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await git(['add', '--', 'out/last-post.json']);
+          try {
+            await git([
+              '-c', 'user.name=Touchline AR Bot',
+              '-c', 'user.email=touchline-ar-bot@users.noreply.github.com',
+              'commit',
+              '-m', '♻️ Save last post for re-publish',
+              '--no-verify',
+            ]);
+          } catch {
+            /* nothing new to commit (identical content already pushed) — fine */
+          }
+          await git(['pull', '--rebase', 'origin', 'main']);
+          await git(['push', 'origin', 'HEAD:main']);
+          console.log('   ♻️ last-post.json saved (re-publish ready)');
+          break;
+        } catch (e) {
+          console.warn(`   last-post.json push attempt ${attempt} failed: ${String(e?.gitErr || e).slice(0, 140)}`);
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+    } catch (e) {
+      console.warn(`   could not write last-post.json: ${String(e?.message || e).slice(0, 140)}`);
+    }
+  }
+
+  return url;
 }

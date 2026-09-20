@@ -27,6 +27,11 @@ on:
         required: false
         default: true
         type: boolean
+      republish:
+        description: 'Re-publish the last saved post (exact caption + image) instead of generating a new one'
+        required: false
+        default: false
+        type: boolean
   # ── Optional auto-posting ───────────────────────────────────────────────
   # Uncomment the schedule block below to post automatically. Scheduled runs
   # ALWAYS post for real (the dry_run checkbox only applies to manual runs).
@@ -83,5 +88,9 @@ jobs:
             MODE="--dry-run"
           else
             MODE="--post"
+          fi
+          # Re-publish the last saved post instead of generating a new one.
+          if [ "${{ inputs.republish }}" = "true" ]; then
+            MODE="$MODE --republish"
           fi
           node src/index.js --type "${{ inputs.content_type || 'random' }}" $MODE

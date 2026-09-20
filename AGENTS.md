@@ -124,10 +124,10 @@ Repo root: `football-new-main/football-new-main/`
 
 | File | What it does | Key functions |
 |---|---|---|
-| `src/index.js` | CLI orchestrator; arg parsing, main flow, abort-without-image | `parseArgs`, `printHelp`, `main` |
+| `src/index.js` | CLI orchestrator; arg parsing, main flow, abort-without-image, `--republish` (re-post last saved post) | `parseArgs`, `printHelp`, `loadLastPost`, `main` |
 | `src/content.js` | Context resolution (ESPN/RSS/trending), LLM call, caption guards, caption scoring | `fetchNewsContext`, `chatComplete`, `generatePostText`, `isFootballOnly`, `findUngroundedName`, `findUngroundedTransliteration`, `findUngroundedClasico`, `normalizeNames`, `buildRegenNudge`, `arabicStems`, `scorePost`, `unknownTokenCount`, `containsFootballVocab`, `fetchTrendingHeadlines`, `fetchCurrentMatches`, `annotateMatch`, `enrichArticle`, `fetchMatchArticle`, `scoreHeaderFromTitle`, `resultArabic`, `fetchMatchFacts`, `normText`, `arSkel`, `enSkel`, `lev` (Levenshtein) |
 | `src/images.js` | Pick a real, fetchable photo; article-first; stock fallback; kid-image filter | `pickImageForContent`, `searchImage`, `isValidImageUrl`, `isLikelyKidImage`, `isBlocked`, `buildImageQuery`, `toEnglishKeywords`, `shuffle`, `flickrId` |
-| `src/overlay.js` | Arabic text overlay (Tajawal font via SVG + sharp) + repo hosting | `applyArabicOverlay`, `prepOverlayText`, `pushComposedImage`, `ensureArabicFont`, `wrapLines`, `escapeXml` |
+| `src/overlay.js` | Arabic text overlay (Tajawal font via SVG + sharp) + repo hosting + last-post persistence | `applyArabicOverlay`, `prepOverlayText`, `pushComposedImage(file, meta)`, `ensureArabicFont`, `wrapLines`, `escapeXml` |
 | `src/templates.js` | Content templates (system/user prompts), fallback topics, leagues | `TEMPLATES`, `FALLBACK_TOPICS`, `LEAGUES`, `CONTENT_TYPES`, `pickRandom` |
 | `src/threads.js` | Threads Graph API client | `createMediaContainer`, `publishMedia`, `postToThreads`, `getThreadsConfig` |
 | `.github/workflows/post.yml` | Manual-run GitHub Action; dry_run checkbox; font + npm install; post step | — |
@@ -175,6 +175,7 @@ local use. `.env` and `.env.*` are gitignored; **never commit real values**.
 | `content_type` | `random` | choice: random, news, stats, analysis, meme, throwback, fact, quote |
 | `topic` | `''` | Arabic or English topical override; blank = auto-picked |
 | `dry_run` | `true` | checked = preview only, no Threads post |
+| `republish` | `false` | re-posts the **last saved post** (exact caption + image from `out/last-post.json`) instead of generating a new one |
 
 Workflow details: `permissions: contents: write` (needed for pushing the
 composed image to `out/`), `concurrency: group: post-to-threads,
@@ -198,6 +199,8 @@ origin main` before `git push origin HEAD:main`.
 node src/index.js                        # random type, dry-run (default)
 node src/index.js -t news --dry-run      # specific type, preview
 node src/index.js -t throwback --post    # real publish (needs secrets)
+node src/index.js --republish --dry-run  # preview the last saved post
+node src/index.js --republish --post     # re-publish it for real
 BOT_TOPIC="Barça vs Sevilla" node src/index.js -t news --post
 ```
 
@@ -226,7 +229,9 @@ letters), no English on the image, no emoji/quote-marks on the headline.
 4. **No kids/children images.** URLs containing `kid|chil|youth|minor` are
    rejected in both article and stock paths (`isLikelyKidImage`).
 5. **Dry-run before posting.** Real publishing requires the user to explicitly
-   approve a concrete post (uncheck `dry_run`). Never post without approval.
+   approve a concrete post (uncheck `dry_run`). Never post without approval —
+   this includes `--republish`: re-publishing still only happens when
+   `dry_run` is unchecked.
 6. **Never commit secrets.** `.env`, `.env.*` are gitignored; do not print
    `LLM_API_KEY`, `THREADS_ACCESS_TOKEN`, or `THREADS_USER_ID` in logs/docs.
 7. **Don't dispatch multiple runs at once.** The compose-image push and the

@@ -77,9 +77,23 @@ CLI flags:
 | `--topic, -m <text>` | Focus on a specific match / player / topic (e.g. `"Barcelona vs Sevilla"` or `"محمد صلاح"`) |
 | `--post`          | Actually publish to Threads (default off)      |
 | `--dry-run`       | Print only, don't post (default)                |
+| `--republish`     | Re-publish the last saved post (exact caption + image; no new generation) |
 | `--help, -h`      | Show usage                                      |
 
 You can also set the topic via the `BOT_TOPIC` env var (used by the GitHub Actions workflow).
+
+### Re-publish the last post (one click, no new generation)
+
+Every run that composes + hosts an image also saves the post to
+`out/last-post.json` (caption + image URL). To post **that exact post** again:
+
+1. Go to **Actions → "The Touchline AR — Post to Threads" → Run workflow**
+2. Check **"Re-publish the last saved post"** (leave content type / topic as-is —
+   they're ignored)
+3. **Posting still needs approval**: leave `dry_run` checked to preview the
+   stored post, or uncheck it to publish it for real
+4. Run — the bot posts the saved caption + image exactly, without generating
+   anything new
 
 ---
 
