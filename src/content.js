@@ -1113,7 +1113,7 @@ function scorePost(text, ctx) {
   if (/[؟?]\s*$/.test(String(text))) s += 4;
   if (/[\u{1F300}-\u{1FAFF}]/u.test(String(text))) s += 1;
   // Prefer the draw with the fewer unknown (possibly invented) Arabic tokens.
-  s -= 3 * unknownTokenCount(body, ctx);
+  s -= 5 * unknownTokenCount(body, ctx);
   const len = String(text).length;
   if (len >= 100 && len <= 480) s += 1;
   return s;
