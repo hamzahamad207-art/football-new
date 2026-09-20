@@ -13,3 +13,11 @@ Thumbs.db
 
 # Node
 node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
+# Generated agent files (keep my_posts.json, ignore the rest)
+agents/style_profile.json
+agents/run_analysis.py
