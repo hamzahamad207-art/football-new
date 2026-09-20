@@ -712,7 +712,14 @@ export async function fetchNewsContext(type, opts = {}) {
     const headlines = await fetchTrendingHeadlines();
     if (headlines.length) {
       // Pick one story, then enrich it with the article's own summary + photos.
-      const item = pickRandom(headlines.slice(0, 5));
+      // Prefer established outlets (BBC Sport, Sky Sports) over the Google
+      // aggregator, which also surfaces niche US/local roundups.
+      const preferred = headlines
+        .slice(0, 8)
+        .filter((i) => i.source === 'BBC Sport' || i.source === 'Sky Sports');
+      const item = preferred.length
+        ? pickRandom(preferred.slice(0, 4))
+        : pickRandom(headlines.slice(0, 5));
       const article = await enrichArticle(item);
       console.log(`📰 Trending headline picked: ${article.title} (${article.source || 'feed'})`);
       if (article.description) {
@@ -767,7 +774,7 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
   // endpoints — other OpenAI-compatible providers ignore unknown fields.
   if (/z\.ai|bigmodel/i.test(baseUrl)) body.thinking = { type: 'disabled' };
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -792,6 +799,17 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
           `use 'glm-4.5-flash' (free) or 'glm-4.7-flash', 'glm-4.6', 'glm-5.3'. ` +
           `(API said: ${errText.slice(0, 200)})`
         );
+      }
+      // Transient overload / rate-limit: back off and retry.
+      if (res.status === 429 || res.status >= 500) {
+        if (attempt < 3) {
+          const delay = [2000, 6000][attempt - 1] || 6000;
+          console.warn(
+            `⚠️  LLM API ${res.status} (attempt ${attempt}/3) — retrying in ${delay / 1000}s...`
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
       }
       throw new Error(`LLM API ${res.status}: ${errText.slice(0, 300)}`);
     }
@@ -1020,16 +1038,21 @@ export async function generatePostText(type, ctx) {
 
   // News posts: draw an independent second caption and keep the cleaner one,
   // which smooths out the occasional gibberish token from the free model
-  // (e.g. the "_performance" / nonsense-word glitches).
+  // (e.g. the "_performance" / nonsense-word glitches). If the second draw fails
+  // (rate limit etc.), keep the first caption instead of failing the run.
   if (type === 'news') {
-    let b = await make(false);
-    if (tpl.footballOnly !== false && !(await isFootballOnly(b, ctx))) {
-      console.warn('⚽ Guard: second draw flagged — regenerating once...');
-      b = await make(true);
+    try {
+      let b = await make(false);
+      if (tpl.footballOnly !== false && !(await isFootballOnly(b, ctx))) {
+        console.warn('⚽ Guard: second draw flagged — regenerating once...');
+        b = await make(true);
+      }
+      const sb = scorePost(b, ctx);
+      text = sb > sa ? b : a;
+      console.log(`✨ Picked better of 2 generated captions (scores ${Math.max(sa, sb)}).`);
+    } catch (err) {
+      console.warn(`⚠️  Second caption draw skipped (${err.message?.slice(0, 80)}) — using first caption.`);
     }
-    const sb = scorePost(b, ctx);
-    text = sb > sa ? b : a;
-    console.log(`✨ Picked better of 2 generated captions (scores ${Math.max(sa, sb)}).`);
   }
 
   // Threads hard cap is 500 chars; trim gently if exceeded.
