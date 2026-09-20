@@ -9,11 +9,14 @@ what changed; AGENTS.md is the permanent knowledge.
 
 - **Repo**: `hamzahamad207-art/football-new` (public). Local checkout:
   `football-new-main/football-new-main/`.
-- **HEAD**: `6f2e370` — "feat: switch LLM provider to OpenRouter free tier
-  (Nemotron 3 Ultra)". **Working tree clean** (`git status` → "nothing to
-  commit, working tree clean") — in sync with `origin/main` after push.
+- **HEAD**: `69eb63a` — "feat: add --republish to re-post the last saved post".
+  **Working tree clean** — in sync with `origin/main` after push.
 - **Branch**: `main` (synced with `origin/main`). The next GitHub Actions run
   picks up the new code.
+- **Re-publish feature**: every run that composes + hosts an image also saves
+  the post to `out/last-post.json`; the workflow now has a **"Re-publish the
+  last saved post"** checkbox (+ `--republish` CLI flag) that posts that exact
+  caption + image with zero regeneration (still gated by `dry_run`).
 - **LLM provider: OpenRouter** (`LLM_BASE_URL=https://openrouter.ai/api/v1`),
   model **`nvidia/nemotron-3-ultra-550b-a55b:free`** (Nemotron 3 Ultra, free
   tier). Secrets updated this session via `gh secret set`: `LLM_API_KEY`
@@ -36,6 +39,25 @@ what changed; AGENTS.md is the permanent knowledge.
   run exposed the caption-integrity bugs this session is fixing (see §2).
 
 ## 2. Session Summary (what was done this session)
+
+### Latest addition — re-publish the last post (`69eb63a`)
+
+User asked: "can I publish this existing post (the dry-run one I already made)
+without generating a new one?" Built a safe, additive feature:
+
+- **Every run persists its result** — `pushComposedImage(file, meta)` writes
+  `out/last-post.json` (createdAt, type, topic, caption text, hosted image URL)
+  in a separate best-effort commit *after* the image push. The image push stays
+  authoritative — a json push hiccup never blocks a post.
+- **`--republish` CLI flag** (+ workflow checkbox "Re-publish the last saved
+  post"): loads `out/last-post.json` and posts that **exact caption + image**,
+  skipping fetch/generate/image/overlay entirely. Dry-run with it = preview of
+  the stored post; posting still requires `dry_run` unchecked + Threads secrets.
+- **Zero risk to the existing bot**: the normal flow is untouched (meta is
+  optional; when absent, `pushComposedImage` behaves exactly as before).
+- **Constraint**: `last-post.json` is only written when a composed image is
+  actually hosted (the main dry-run case). If image/overlay hosting fails, no
+  record is saved (nothing to re-publish) — the user can still post manually.
 
 ### Latest session — OpenRouter migration (`6f2e370`)
 
@@ -115,6 +137,7 @@ rules.
 | **Smarter regen nudge (topic + verbatim names/roles)** | Banning the wrong name alone didn't fix the Celtic→Chelsea loop; telling the model the real topic and to copy names/roles verbatim gives regens a real chance. | Old generic nudge (proved weak). |
 | **Grammar as scoring bias, not hard validator** | A full Arabic verb-agreement validator without a grammar library is unreliable. The narrow feminine-subject pattern only biases which draw wins — zero risk of false rejection. | Hard rejection regex (false-positive risk); nothing (slips survive). |
 | **OpenRouter free Nemotron 3 Ultra as writer** | User asked honestly if human-quality output is achievable and chose "free but much stronger". Tested live on a realistic Arabic grounding task: Nemotron 3 Ultra produced grounded, engaging Khaleeji copy (~7.5s) while GLM-5.2/Qwen free 429'd. `content.js` stays provider-agnostic (env overrides), so a later switch to a paid frontier model is a secrets-only change. | Staying on GLM-4.7-Flash (low quality ceiling); paid frontier (rejected for now); adding more heuristics on top of a weak writer (band-aid). |
+| **Persisted last post + `--republish`** | User wanted to publish an existing dry-run post without regenerating. Persisting the exact caption + hosted image URL (committed to `out/last-post.json` on every composed push) makes re-publishing deterministic — no re-roll of the dice. Persisted *after* the image push as a separate commit so it can never block posting. | Re-running with the same topic and hoping for the same caption (non-deterministic); manual copy-paste every time (no); a `last-post.json` written before the push (risky if the push fails). |
 
 ## 4. Tried and Rejected
 
@@ -271,6 +294,9 @@ error/symptom, why it failed, what we learned.
     backoff absorbs most; adding ≥$10 OpenRouter credits raises the free cap
     to 1000/day. Nemotron 3 Ultra emits reasoning tokens — each call is slower
     (tested ~7.5s) than GLM flash; runs will take longer.
+11. **`last-post.json` is a public file in the repo** (`out/last-post.json`) —
+    it contains only the caption text + image URL + type/topic/timestamp (no
+    secrets). Fine to be public, but don't ever add token/secret fields to it.
 
 ## 6. Unverified Claims & Things Needing a Human Check
 
@@ -300,6 +326,10 @@ error/symptom, why it failed, what we learned.
   in CI. A dry-run is required to confirm: Nemotron captions pass all guards
   (no false-positive regen loops from a stronger model), the overlay headline
   stays Arabic, and free-tier 429s don't stall the run.
+- **Re-publish feature UNVERIFIED in CI** (`69eb63a`): confirm a normal dry-run
+  prints "♻️ last-post.json saved", then a `--republish` dry-run reads and
+  prints the exact stored post. (First real re-publish happens later with user
+  approval.)
 - **SECURITY — rotate the OpenRouter key.** The user pasted the key in the chat
   transcript during this session. Once the migration is confirmed working, the
   user should rotate it at https://openrouter.ai/keys and we re-set the
@@ -308,29 +338,34 @@ error/symptom, why it failed, what we learned.
 ## 7. Next Steps (prioritized)
 
 1. **Run a dry-run in CI on `origin/main`** (now carries `c87857f` +
-   `6f2e370`) to validate: Nemotron captions are grounded and engaging (no
-   repeated lines, no forced questions), no false-positive regen loops, and
-   the OpenRouter migration works end-to-end (free-tier 429s aside).
-2. **Build the grounding upgrade** (deferred this session): feed the *full
+   `6f2e370` + `69eb63a`) to validate: Nemotron captions are grounded and
+   engaging (no repeated lines, no forced questions), no false-positive regen
+   loops, OpenRouter migration works end-to-end (free-tier 429s aside), and
+   the run prints "♻️ last-post.json saved (re-publish ready)".
+2. **Test the re-publish flow**: a second dry-run with **"Re-publish the last
+   saved post"** checked should print the exact stored post (no generation).
+   Only then, with explicit user approval, re-publish for real (`dry_run`
+   unchecked).
+3. **Build the grounding upgrade** (deferred this session): feed the *full
    article body* into the news prompt (not just the recap/summary), add
    deterministic number/entity containment (every number/club/position in the
    caption must appear in the article), and optionally an LLM-as-judge verify
    pass. The model jump fixes most quality issues; this closes the rest.
-3. **Rotate the OpenRouter key** (it was pasted in chat) and re-set the
+4. **Rotate the OpenRouter key** (it was pasted in chat) and re-set the
    `LLM_API_KEY` secret.
-4. **Confirm the latest composed image** (the next fresh dry-run) — open the
+5. **Confirm the latest composed image** (the next fresh dry-run) — open the
    preview URL and verify the Arabic overlay looks correct.
-5. **Check Threads for the "Genesis" جيل زد test post** and delete it if it
+6. **Check Threads for the "Genesis" جيل زد test post** and delete it if it
    exists.
-6. **On explicit user approval** of a specific post, run the workflow with
+7. **On explicit user approval** of a specific post, run the workflow with
    `dry_run` unchecked, then confirm the post is live on Threads (also
    verifies the real publish path with the overlay).
-7. **Collect new failure samples.** Each run may surface new misspellings /
+8. **Collect new failure samples.** Each run may surface new misspellings /
    guard gaps: add them to `normalizeNames` + `NAMED_ENTITIES` / allowlists.
-8. **Flush old composed images?** `out/` grows by one image per run. Allowed,
+9. **Flush old composed images?** `out/` grows by one image per run. Allowed,
    but review disk/repo size periodically; optionally prune old `tl-*.jpg`.
-9. **Consider a scheduled cron** (commented out in `post.yml`) only if the
-   user asks — for now posting is manual.
+10. **Consider a scheduled cron** (commented out in `post.yml`) only if the
+    user asks — for now posting is manual.
 
 ## 8. My Preferences (the user)
 
