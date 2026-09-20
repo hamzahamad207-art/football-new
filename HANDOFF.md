@@ -9,12 +9,15 @@ what changed; AGENTS.md is the permanent knowledge.
 
 - **Repo**: `hamzahamad207-art/football-new` (public). Local checkout:
   `football-new-main/football-new-main/`.
-- **HEAD**: `c87857f` — "feat: make closing question optional + strengthen
-  fact-grounding guards". **Working tree clean** (`git status` → "nothing to
-  commit, working tree clean").
-- **Branch**: `main`. NOTE: the local `main` is **ahead of `origin/main`** by
-  this commit — it has NOT been pushed yet (the user runs the bot via GitHub
-  Actions, so the code must be pushed before the next workflow run picks it up).
+- **HEAD**: `6f2e370` — "feat: switch LLM provider to OpenRouter free tier
+  (Nemotron 3 Ultra)". **Working tree clean** (`git status` → "nothing to
+  commit, working tree clean") — in sync with `origin/main` after push.
+- **Branch**: `main` (synced with `origin/main`). The next GitHub Actions run
+  picks up the new code.
+- **LLM provider: OpenRouter** (`LLM_BASE_URL=https://openrouter.ai/api/v1`),
+  model **`nvidia/nemotron-3-ultra-550b-a55b:free`** (Nemotron 3 Ultra, free
+  tier). Secrets updated this session via `gh secret set`: `LLM_API_KEY`
+  (user's OpenRouter key — **rotate it, see §6**), `LLM_MODEL`, `LLM_BASE_URL`.
 - **Node not available locally** — JS changes are validated by running the
   GitHub Actions workflow, never locally. No syntax check was run; review the
   diff carefully or kick a dry-run before posting.
@@ -24,13 +27,40 @@ what changed; AGENTS.md is the permanent knowledge.
   (`tl-<ts>.jpg`, hosted at `raw.githubusercontent.com/.../main/out/...`).
   Dry-runs do not publish; `--post` publishes via Threads API when secrets are
   set.
-- **LLM**: free tier (`glm-4.7-flash` pinned via `LLM_MODEL` secret) — 429s are
-  frequent but handled by the 5-attempt retry loop.
+- **LLM**: free tier (`nvidia/nemotron-3-ultra-550b-a55b:free` — Nemotron 3
+  Ultra via OpenRouter) — free-tier 429s / "provider returned error" happen,
+  handled by the 5-attempt retry loop; calls are slower (reasoning tokens,
+  ~7s+).
 - **Last verified dry-run**: before this session — "Celtic to rekindle Gineitis
   move in January" → Arabic caption → composed `tl-1789893925286.jpg`. That
   run exposed the caption-integrity bugs this session is fixing (see §2).
 
 ## 2. Session Summary (what was done this session)
+
+### Latest session — OpenRouter migration (`6f2e370`)
+
+User asked, in frustration, whether the bot can reach human quality, and which
+free/paid models exist right now. Honest answer given: the architecture is fine;
+the ceiling was the free code-focused GLM-4.7-Flash writer + heuristic guards +
+short-recap input. User chose **OpenRouter free tier** and pasted an OpenRouter
+API key.
+
+- **Tested candidates LIVE** (realistic Arabic grounding task with a forcing
+  "Celtic/Chelsea" trap): `nvidia/nemotron-3-ultra-550b-a55b:free` worked and
+  produced grounded, engaging Khaleeji copy in ~7.5s (no invented clubs, proper
+  tone, natural closer). `z-ai/glm-5.2:free` and `qwen/qwen3.8-27b:free`
+  returned provider 429s mid-test — rejected as flaky.
+- **Shipped**: `content.js` defaults → OpenRouter + Nemotron; `LLM_BASE_URL`
+  passed through the workflow (`post.yml`); `max_tokens` 800→1200 (reasoning
+  headroom); OpenRouter attribution headers; docs/env/deploy updated
+  (Z.ai → OpenRouter everywhere).
+- **Secrets updated via `gh`**: `LLM_API_KEY` (OpenRouter key), `LLM_MODEL`,
+  `LLM_BASE_URL`.
+- **NOT changed**: the grounding/verifier upgrades (full article body, numeric
+  containment, judge pass) were deferred — the model jump fixes most quality
+  complaints; deterministic containment is next (§7).
+
+### Previous session (`c87857f`)
 
 Goal (user request): **remove the mandatory closing question** — captions
 should just be engaging, with a question only when it adds engagement. Plus the
@@ -38,7 +68,7 @@ standing backlog: fix the caption guardrails that let the Celtic→Chelsea
 disaster through, and commit the reviewed-but-lost normalizers/derby/grammar
 rules.
 
-**Shipped in this session** (`c87857f`):
+**Shipped in the previous session** (`c87857f`):
 
 - **Closing question is now optional everywhere.** All templates
   (`templates.js`) now instruct an *engaging* closing line (sharp remark,
@@ -84,6 +114,7 @@ rules.
 | **`الدي→الشولو` gated on Simeone context** | Unconditional replacement mangles الدي as a typo of الذي/التي in unrelated captions. | Unconditional replace (rejected — too risky). |
 | **Smarter regen nudge (topic + verbatim names/roles)** | Banning the wrong name alone didn't fix the Celtic→Chelsea loop; telling the model the real topic and to copy names/roles verbatim gives regens a real chance. | Old generic nudge (proved weak). |
 | **Grammar as scoring bias, not hard validator** | A full Arabic verb-agreement validator without a grammar library is unreliable. The narrow feminine-subject pattern only biases which draw wins — zero risk of false rejection. | Hard rejection regex (false-positive risk); nothing (slips survive). |
+| **OpenRouter free Nemotron 3 Ultra as writer** | User asked honestly if human-quality output is achievable and chose "free but much stronger". Tested live on a realistic Arabic grounding task: Nemotron 3 Ultra produced grounded, engaging Khaleeji copy (~7.5s) while GLM-5.2/Qwen free 429'd. `content.js` stays provider-agnostic (env overrides), so a later switch to a paid frontier model is a secrets-only change. | Staying on GLM-4.7-Flash (low quality ceiling); paid frontier (rejected for now); adding more heuristics on top of a weak writer (band-aid). |
 
 ## 4. Tried and Rejected
 
@@ -187,6 +218,16 @@ error/symptom, why it failed, what we learned.
     Simeone/Atlético-related (`normalizeNames` context gate). **Learned**:
     text normalizers need context gates, not global regexes.
 
+16. **Sticking with Z.ai GLM-4.7-Flash** — Symptom: free-tier output was
+    repetitive ("Gineitis targeted… Gineitis is set for a potential move…"),
+    extrapolated beyond the recap, and force-closed with a question. The
+    quality ceiling is the **model**, not the pipeline. Fix: switched the
+    writer to OpenRouter free `nvidia/nemotron-3-ultra-550b-a55b:free`
+    (Nemotron 3 Ultra), tested live (grounded, Khaleeji-engaging copy, ~7.5s).
+    GLM-5.2/Qwen free variants on OpenRouter were rejected: provider 429s
+    mid-test. **Learned**: upgrade the writer model before piling on more
+    heuristic guards; it's the dominant quality lever.
+
 ## 5. Known Issues / Open Bugs
 
 1. **LLM occasionally produces flawed captions that pass guardrails.**
@@ -221,9 +262,15 @@ error/symptom, why it failed, what we learned.
    unrelated words. Adequate but heuristic.
 8. **Node is not installed locally** — any new JS must be validated through
    the GitHub Actions workflow (each run ~4-5 min).
-9. **Local `main` is one commit ahead of `origin/main`** — `c87857f` (this
-   session's changes) has NOT been pushed. The next GitHub Actions run will use
-   the OLD code until it's pushed.
+9. **Local `main` was one commit ahead of `origin/main`** — resolved by the
+   `6f2e370` push this session.
+10. **OpenRouter free-tier quota/429s.** Without credits, free models allow
+    ~50 requests/day per model; a heavy `news` run (2 draws + regens +
+    classifier ≈ 10–16 calls) can approach it, and "provider returned error"
+    happens mid-busy-day (GLM-5.2/Qwen failed during testing). The 5-attempt
+    backoff absorbs most; adding ≥$10 OpenRouter credits raises the free cap
+    to 1000/day. Nemotron 3 Ultra emits reasoning tokens — each call is slower
+    (tested ~7.5s) than GLM flash; runs will take longer.
 
 ## 6. Unverified Claims & Things Needing a Human Check
 
@@ -245,29 +292,44 @@ error/symptom, why it failed, what we learned.
   written but its success end-to-end after the overlay feature is UNVERIFIED —
   the last confirmed live post predates the overlay changes. A publish run
   should be approved manually and then confirmed on the Threads page.
-- **`LLM_MODEL` secret value** is `glm-4.7-flash` per prior context, but
-  secret values can't be read — assume whatever is set in GitHub Secrets is
+- **`LLM_MODEL` / `LLM_BASE_URL` / `LLM_API_KEY` were updated this session** to
+  OpenRouter + Nemotron (`nvidia/nemotron-3-ultra-550b-a55b:free`) via
+  `gh secret set`. Secret values can't be read back — assume what's set is
   authoritative.
+- **OpenRouter migration UNVERIFIED end-to-end.** `6f2e370` has not been run
+  in CI. A dry-run is required to confirm: Nemotron captions pass all guards
+  (no false-positive regen loops from a stronger model), the overlay headline
+  stays Arabic, and free-tier 429s don't stall the run.
+- **SECURITY — rotate the OpenRouter key.** The user pasted the key in the chat
+  transcript during this session. Once the migration is confirmed working, the
+  user should rotate it at https://openrouter.ai/keys and we re-set the
+  `LLM_API_KEY` secret (never commit it).
 
 ## 7. Next Steps (prioritized)
 
-1. **Push `c87857f` and run a dry-run in CI** to validate this session's
-   changes (engaging endings without forced questions; no regen thrash from the
-   new guards; normalizers working). Watch for new false positives from the
-   full-caption grounding on canned types.
-2. **Confirm the latest composed image** (`tl-1789893925286.jpg` or the next
-   fresh dry-run) — open the preview URL and verify the Arabic overlay looks
-   correct.
-3. **Check Threads for the "Genesis" جيل زد test post** and delete it if it
+1. **Run a dry-run in CI on `origin/main`** (now carries `c87857f` +
+   `6f2e370`) to validate: Nemotron captions are grounded and engaging (no
+   repeated lines, no forced questions), no false-positive regen loops, and
+   the OpenRouter migration works end-to-end (free-tier 429s aside).
+2. **Build the grounding upgrade** (deferred this session): feed the *full
+   article body* into the news prompt (not just the recap/summary), add
+   deterministic number/entity containment (every number/club/position in the
+   caption must appear in the article), and optionally an LLM-as-judge verify
+   pass. The model jump fixes most quality issues; this closes the rest.
+3. **Rotate the OpenRouter key** (it was pasted in chat) and re-set the
+   `LLM_API_KEY` secret.
+4. **Confirm the latest composed image** (the next fresh dry-run) — open the
+   preview URL and verify the Arabic overlay looks correct.
+5. **Check Threads for the "Genesis" جيل زد test post** and delete it if it
    exists.
-4. **On explicit user approval** of a specific post, run the workflow with
+6. **On explicit user approval** of a specific post, run the workflow with
    `dry_run` unchecked, then confirm the post is live on Threads (also
    verifies the real publish path with the overlay).
-5. **Collect new failure samples.** Each run may surface new misspellings /
+7. **Collect new failure samples.** Each run may surface new misspellings /
    guard gaps: add them to `normalizeNames` + `NAMED_ENTITIES` / allowlists.
-6. **Flush old composed images?** `out/` grows by one image per run. Allowed,
+8. **Flush old composed images?** `out/` grows by one image per run. Allowed,
    but review disk/repo size periodically; optionally prune old `tl-*.jpg`.
-7. **Consider a scheduled cron** (commented out in `post.yml`) only if the
+9. **Consider a scheduled cron** (commented out in `post.yml`) only if the
    user asks — for now posting is manual.
 
 ## 8. My Preferences (the user)
