@@ -987,7 +987,7 @@ const ARABIC_WORDS = new Set([
   'اسباب', 'معنى', 'أهمية', 'اهميه', 'قيمة', 'قيمه', 'مستحق', 'مستحقه',
   'كبيرتهم', 'كبيرهم', 'مؤكد', 'مؤكده', 'محسوم', 'محسومه', 'يحدد', 'حدد',
   'يحددها', 'يستحقون', 'يستاهل', 'يستاهلون',
-  // the mandatory closing question + astonishment (misc. hype vocabulary)
+  // the closing question + astonishment (misc. hype vocabulary)
   'رأي', 'راي', 'رأيك', 'رايک', 'رأيكم', 'رايكم', 'آراء', 'اراء', 'ارائه',
   'ذهول', 'ذهوله', 'ذهولهه', 'دهشة', 'دهشه', 'انبهار', 'انبهر', 'ينبهر',
   'مندهش', 'مندهشين', 'مبهر', 'مبهره',
@@ -1077,7 +1077,8 @@ const NAMED_ENTITIES = [
   ['رافينها', 'رافينيا', 'رافينيا', 'raphinha'],
   ['غوارديولا', 'guardiola'],
   ['أنشيلوتي', 'ancelotti'],
-  ['مورينيو', 'mourinho'],
+  ['مورينيو', 'موهريو', 'mourinho'],
+  ['وسيميوني', 'سيميوني', 'الشولو', 'الدي', 'simeone', 'el cholo'],
   ['كلوب', 'klopp'],
   ['أرتيتا', 'arteta'],
   ['تود بوهلي', 'todd boehly'],
@@ -1098,22 +1099,27 @@ function normText(s) {
 
 /**
  * Returns the display name of the first tracked club/star/manager that the
- * caption's body mentions WITHOUT appearing in the article data (header/
- * recap/facts) — i.e. the model invented someone. Returns null if the caption
- * is fully grounded. The header line itself is always grounded (it IS the
- * article title), so we only inspect the Khaleeji body.
+ * caption mentions WITHOUT appearing in the article data (header/recap/facts/
+ * topic) — i.e. the model invented someone. Returns null if the caption is
+ * fully grounded. Scans the WHOLE caption: since trending-news posts render an
+ * Arabic headline (not the article title), the first line is NOT automatically
+ * grounded and an invented club there must be caught too.
  */
 function findUngroundedName(text, ctx) {
-  const body = String(text).replace(/^\S[^\n]*\n/, '');
+  // Check the WHOLE caption, first line included. The first line of a news
+  // post is an Arabic headline, not the article title — it is NOT
+  // automatically grounded. This catches an invented club inside the headline
+  // itself (e.g. "عودة تشيلسي لاستكمال صفقة جينيتيس" in a story about Celtic),
+  // which previously slipped through because the body-only scan skipped line 1.
+  const fullNorm = normText(text);
   const ground = normText([ctx?.header, ctx?.recap, ctx?.facts, ctx?.topic].join(' '));
-  const bodyNorm = normText(body);
   for (const pair of NAMED_ENTITIES) {
     // Only aliases ≥5 chars are tracked (avoids "ليون" matching "ليونيل",
     // "ريال"/"روما"/"ميسي" matching unrelated words).
     const aliases = pair.map((n) => normText(n)).filter((n) => n.length >= 5);
     if (!aliases.length) continue;
-    const inBody = aliases.some((n) => bodyNorm.includes(n));
-    if (!inBody) continue;
+    const inText = aliases.some((n) => fullNorm.includes(n));
+    if (!inText) continue;
     const grounded = aliases.some((n) => ground.includes(n) || ground.includes(n.replace(/^ال/, '')));
     if (!grounded) {
       console.warn(`⚽ Guard: caption mentions "${pair[0]}" — absent from article data.`);
@@ -1121,6 +1127,23 @@ function findUngroundedName(text, ctx) {
     }
   }
   return null;
+}
+
+/**
+ * The word "الكلاسيكو" is reserved for Real Madrid vs Barcelona. If a caption
+ * uses it while the article data doesn't cover both clubs, it's a mislabel
+ * (e.g. calling any derby "كلاسيكو" — the user's rule: it's a derby/المواجهة,
+ * not el clásico, unless it really is RM–Barça). A topic whose text is about
+ * the clasico is the escape hatch (the topic itself IS that fixture).
+ */
+function findUngroundedClasico(text, ctx) {
+  const full = String(text || '');
+  if (!/الكلاسيكو|كلاسيكو/.test(full)) return null;
+  if (/الكلاسيكو|كلاسيكو/.test(ctx?.topic || '')) return null;
+  const ground = normText([ctx?.header, ctx?.recap, ctx?.facts, ctx?.topic].join(' '));
+  const hasRMA = /real madrid|مدريد|\bريال\b/.test(ground);
+  const hasBAR = /barcelona|برشلونة|بارسا/.test(ground);
+  return hasRMA && hasBAR ? null : 'الكلاسيكو';
 }
 
 // ---- Transliteration grounding (catches brand-new invented names) ---------
@@ -1287,6 +1310,8 @@ async function isFootballOnly(text, ctx) {
   // Transliteration-grounding: unknown name-like tokens must romanize back to
   // a word in the article data (catches brand-new invented names).
   if (findUngroundedTransliteration(text, ctx)) return false;
+  // Derby mislabeling: "الكلاسيكو" is reserved for Real Madrid vs Barcelona.
+  if (findUngroundedClasico(text, ctx)) return false;
   // Anchored captions (starting with the exact match header/article title) are
   // unmistakably football — the deterministic vocabulary check already passed,
   // so skip the extra LLM classifier call (fewer 429s under burst load).
@@ -1307,8 +1332,10 @@ async function isFootballOnly(text, ctx) {
 
 /**
  * Quick deterministic quality score for a generated caption — used to pick the
- * cleaner of two independent draws. Penalizes code/English artifacts harshly,
- * rewards header faithfulness, ending on a question, an emoji and sane length.
+ * cleaner of two independent draws. Penalizes code/English artifacts and
+ * grammar slips harshly, rewards header faithfulness, an engaging ending, an
+ * emoji and sane length. Questions are optional now, so ending on a natural
+ * question is only mildly preferred — not mandated.
  */
 function scorePost(text, ctx) {
   const body = String(text).replace(/^\S[^\n]*\n/, '');
@@ -1321,13 +1348,63 @@ function scorePost(text, ctx) {
   if (ctx?.type === 'news') {
     if (/^[📰🚨]/.test(String(text))) s += 4;
   } else if (h && String(text).startsWith(h.slice(0, Math.min(30, h.length)))) s += 6;
-  if (/[؟?]\s*$/.test(String(text))) s += 4;
+  if (/[؟?]\s*$/.test(String(text))) s += 2; // question ending: optional, lightly preferred
+  // Grammar slip: feminine subject + masculine verb ("المباراة ما ينتهي").
+  // Scoring bias only — the correct form is "ما تنتهي".
+  if (/(المباراة|المواجهة|الجولة|المرحلة)\s+ما ينتهي/.test(String(text))) s -= 60;
   if (/[\u{1F300}-\u{1FAFF}]/u.test(String(text))) s += 1;
   // Prefer the draw with the fewer unknown (possibly invented) Arabic tokens.
   s -= 5 * unknownTokenCount(body, ctx);
   const len = String(text).length;
   if (len >= 100 && len <= 480) s += 1;
   return s;
+}
+
+/**
+ * Post-generation spelling fixes (reviewed + user-approved, previously never
+ * committed): foreign-name misspellings the free LLM occasionally emits.
+ * Applied after cleaning so the fixed spelling is what appears in the post AND
+ * in the composed-image overlay. "الدي"→"الشولو" only fires when the story is
+ * actually about Simeone/Atlético — otherwise "الدي" is usually a typo of
+ * "الذي/التي" and must not be mangled.
+ */
+function normalizeNames(text, ctx) {
+  let t = String(text || '');
+  t = t.replace(/موهريو/g, 'مورينيو'); // Mourinho misspelling
+  t = t.replace(/وسيميون(?!ي)/g, 'وسيميوني'); // Simeone missing its final ي
+  if (ctx) {
+    const ground = normText([ctx.header, ctx.recap, ctx.facts, ctx.topic].join(' '));
+    if (/simeone|اتلتيكو|أتلتي|الشولو|الدي|سيميوني/.test(ground)) {
+      t = t.replace(/(^|[^\u0600-\u06FF])الدي(?=[^\u0600-\u06FF]|$)/g, '$1الشولو');
+    }
+  }
+  return t;
+}
+
+/**
+ * Targeted regeneration nudge. For a wrong club/name, forbid it AND tell the
+ * model to keep the story's real names/roles verbatim (fixes the Celtic→
+ * Chelsea failure mode where banning the wrong name alone wasn't enough). For
+ * "الكلاسيكو" misuse, steer it to ديربي/المواجهة الكبيرة instead.
+ */
+function buildRegenNudge(bad, ctx) {
+  const topicNote = ctx?.topic ? ` المنشور أصلاً عن: "${ctx.topic}".` : '';
+  if (bad === 'الكلاسيكو') {
+    return (
+      'ملاحظة: لا تستخدم كلمة "الكلاسيكو" إلا إذا كانت المباراة بين ريال مدريد وبرشلونة — ' +
+      'استخدم "ديربي" أو "المواجهة الكبيرة" بدلاً منها. أعد كتابة المنشور بنفس السطر الأول، ' +
+      'والأسطر بالعربية فقط، وانقل الأسماء والمراكز حرفيًا من المعلومات، واختم بنهاية جذابة (سؤال اختياري).'
+    );
+  }
+  return (
+    'ملاحظة: أعد كتابة المنشور حرفيًا بنفس السطر الأول، واجعل الأسطر الخليجية بالعربية فقط ' +
+    '(ممنوع كلمات إنجليزية أو رموز مثل _ داخل النص)، ولا تذكر أي نادٍ/لاعب/رقم غير مذكور ' +
+    'في المعلومات أعلاه، وانقل أسماء الأندية والمراكز حرفيًا من المعلومات (لا تستبدل ناديًا بآخر، ' +
+    'ولاعب وسط = وسط وليس مدافعًا)، واختم بنهاية جذابة (سؤال فقط إذا كان طبيعيًا)' +
+    (bad ? `، ولا تذكر اسم "${bad}" إطلاقًا` : '') +
+    '.' +
+    topicNote
+  );
 }
 
 /**
@@ -1354,42 +1431,42 @@ export async function generatePostText(type, ctx) {
       .replace(/\*+/g, '')
       .trim();
 
-  const make = async (nudge, target) => {
+  const make = async (extra) => {
     // Pace ourselves: the free tier trips 429s when we fire caption calls
     // back-to-back (draw A + draw B + regens + classifier were ~16 calls/run).
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await sleep(700);
-    return clean(
-      await chatComplete({
-        systemPrompt: tpl.systemPrompt,
-        userPrompt:
-          tpl.userPrompt(ctx) +
-          (nudge
-            ? '\n\nملاحظة: أعد كتابة المنشور حرفيًا بنفس السطر الأول، واجعل الأسطر الخليجية بالعربية فقط ' +
-              '(ممنوع كلمات إنجليزية أو رموز مثل _ داخل النص)، ولا تذكر أي نادٍ/لاعب/رقم غير مذكور ' +
-              'في المعلومات أعلاه، واختم دائمًا بسؤال واحد' +
-              (target ? `، ولا تذكر اسم "${target}" إطلاقًا` : '') +
-              '.'
-            : ''),
-        temperature: tpl.temperature ?? 0.8,
-      })
+    return normalizeNames(
+      clean(
+        await chatComplete({
+          systemPrompt: tpl.systemPrompt,
+          userPrompt: tpl.userPrompt(ctx) + (extra ? '\n\n' + extra : ''),
+          temperature: tpl.temperature ?? 0.8,
+        })
+      ),
+      ctx
     );
   };
 
   // A guarded draw: generate, run all guards, and if flagged regenerate up to
-  // 3 times — each regen explicitly bans the offending name (so a stubborn
-  // hallucination like "ليفاندوفسكي" in a Barça post can't survive).
+  // 3 times — each regen bans the offending name AND points the model back at
+  // the story's real names/roles (so a stubborn hallucination like
+  // "ليفاندوفسكي" in a Barça post, or "تشيلسي" in a Celtic transfer story,
+  // can't survive).
   const guardedDraw = async () => {
     let t;
     try {
-      t = await make(false);
+      t = await make('');
       if (tpl.footballOnly !== false) {
         for (let attempt = 1; attempt <= 3; attempt++) {
-          const bad = findUngroundedName(t, ctx) || findUngroundedTransliteration(t, ctx);
-          const pass = await isFootballOnly(t, ctx); // includes the name check
+          const bad =
+            findUngroundedName(t, ctx) ||
+            findUngroundedTransliteration(t, ctx) ||
+            findUngroundedClasico(t, ctx);
+          const pass = await isFootballOnly(t, ctx); // includes the name checks
           if (pass && !bad) return t;
           console.warn(`⚽ Guard: flag (${bad || 'domain'}) — regenerating (${attempt}/3)...`);
-          t = await make(true, bad || undefined);
+          t = await make(buildRegenNudge(bad, ctx));
         }
         console.warn('⚽ Guard: caption still flagged after 3 attempts — accepting as-is.');
       }

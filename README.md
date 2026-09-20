@@ -25,7 +25,8 @@ Five content styles, picked per run:
 | `quote`     | Famous player/coach quote + your Khaleeji take                           |
 
 All text is in **Khaleeji (Gulf) Arabic** with the tone of a casual fan
-account — short, punchy, ends with a question to drive engagement.
+account — short, punchy, opening with a strong headline and closing with an
+engaging line (a question only when it makes the post more engaging).
 
 ---
 

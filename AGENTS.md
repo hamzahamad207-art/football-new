@@ -11,7 +11,8 @@ open issues), read **HANDOFF.md**.
 - **What it is**: A bot that posts **Khaleeji (Gulf) Arabic football content** to
   the user's **Threads** page, in the style of the X account
   [@TouchlineX](https://x.com/TouchlineX) — short, punchy posts with a strong
-  header line, hype text, and a mandatory closing question.
+  header line, hype text, and an engaging closing line (a question only when it
+  adds engagement).
 - **Goal**: A human-quality Arabic football page that runs automatically, with
   zero invented facts, no AI images, and no English/Latin anywhere.
 - **Brand**: "The Touchline AR." The bot is described as
@@ -74,7 +75,7 @@ Defined in `CONTENT_TYPES` in `src/templates.js`:
 | `stats` | إحصائيات | A stat/record | Canned topic; optional recap from context. Starts with the number. `footballOnly` guard applies. |
 | `analysis` | تحليل | Tactical breakdown | Canned topic; optional recap. |
 | `meme` | سخرية | Short Khaleeji joke | No fresh news needed (`newsQuery: () => null`). |
-| `throwback` | ذكريات | Nostalgic moment | Canned topic, nostalgic tone, ends with "تذكرونه؟". |
+| `throwback` | ذكريات | Nostalgic moment | Canned topic, nostalgic tone, may end with "تذكرونه؟" |
 | `fact` | حقائق | Fun true fact | No fresh news needed. |
 | `quote` | اقتباسات | Famous player/coach quote | No fresh news needed; must be a real, attributable quote. |
 | `random` | — | Picks a random one of the 7 | Only valid via CLI / workflow choice; resolved in `src/index.js` via `pickRandom`. |
@@ -118,7 +119,7 @@ Repo root: `football-new-main/football-new-main/`
 | File | What it does | Key functions |
 |---|---|---|
 | `src/index.js` | CLI orchestrator; arg parsing, main flow, abort-without-image | `parseArgs`, `printHelp`, `main` |
-| `src/content.js` | Context resolution (ESPN/RSS/trending), LLM call, caption guards, caption scoring | `fetchNewsContext`, `chatComplete`, `generatePostText`, `isFootballOnly`, `findUngroundedName`, `findUngroundedTransliteration`, `arabicStems`, `scorePost`, `unknownTokenCount`, `containsFootballVocab`, `fetchTrendingHeadlines`, `fetchCurrentMatches`, `annotateMatch`, `enrichArticle`, `fetchMatchArticle`, `scoreHeaderFromTitle`, `resultArabic`, `fetchMatchFacts`, `normText`, `arSkel`, `enSkel`, `lev` (Levenshtein) |
+| `src/content.js` | Context resolution (ESPN/RSS/trending), LLM call, caption guards, caption scoring | `fetchNewsContext`, `chatComplete`, `generatePostText`, `isFootballOnly`, `findUngroundedName`, `findUngroundedTransliteration`, `findUngroundedClasico`, `normalizeNames`, `buildRegenNudge`, `arabicStems`, `scorePost`, `unknownTokenCount`, `containsFootballVocab`, `fetchTrendingHeadlines`, `fetchCurrentMatches`, `annotateMatch`, `enrichArticle`, `fetchMatchArticle`, `scoreHeaderFromTitle`, `resultArabic`, `fetchMatchFacts`, `normText`, `arSkel`, `enSkel`, `lev` (Levenshtein) |
 | `src/images.js` | Pick a real, fetchable photo; article-first; stock fallback; kid-image filter | `pickImageForContent`, `searchImage`, `isValidImageUrl`, `isLikelyKidImage`, `isBlocked`, `buildImageQuery`, `toEnglishKeywords`, `shuffle`, `flickrId` |
 | `src/overlay.js` | Arabic text overlay (Tajawal font via SVG + sharp) + repo hosting | `applyArabicOverlay`, `prepOverlayText`, `pushComposedImage`, `ensureArabicFont`, `wrapLines`, `escapeXml` |
 | `src/templates.js` | Content templates (system/user prompts), fallback topics, leagues | `TEMPLATES`, `FALLBACK_TOPICS`, `LEAGUES`, `CONTENT_TYPES`, `pickRandom` |
@@ -257,6 +258,17 @@ letters), no English on the image, no emoji/quote-marks on the headline.
 - **Verify your own claims against the code.** Proposed edits from review
   (e.g. name misspelling normalizers) are often *not* committed — check git
   log and file contents before claiming a fix exists.
+- **The first line is NOT auto-grounded.** The old assumption "the first line
+  IS the article title" died once trending news started rendering Arabic
+  headlines. `findUngroundedName` must scan the **whole caption** — an invented
+  club inside the headline itself (تشيلسي in a Celtic transfer story) used to
+  slip past the body-only scan, and the regen nudge alone couldn't fix it.
+- **Questions are optional.** Templates close with an engaging line; a question
+  is added only when it's natural. `scorePost` gives a question ending only a
+  small edge between two draws and never penalizes a strong non-question closer.
+- **`الكلاسيكو` is reserved for RM–Barça.** `findUngroundedClasico` flags the
+  word in any caption whose article data doesn't cover both clubs, and the
+  regen nudge steers the model to ديربي/المواجهة الكبيرة.
 - **The agent can't see images.** Overlay/Arabic-rendering quality must be
   confirmed by the user via the preview URL. Never claim an image "looks
   correct" without a human check.
