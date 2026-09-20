@@ -826,12 +826,14 @@ async function chatComplete({ systemPrompt, userPrompt, temperature = 0.8 }) {
           `(API said: ${errText.slice(0, 200)})`
         );
       }
-      // Transient overload / rate-limit: back off and retry.
+      // Transient overload / rate-limit: back off and retry. 5 attempts with
+      // growing backoff — the free tier trips 429s under burst load and we
+      // regularly stack 4+ calls per caption (generate + regen + classifier).
       if (res.status === 429 || res.status >= 500) {
-        if (attempt < 3) {
-          const delay = [2000, 6000][attempt - 1] || 6000;
+        if (attempt < 5) {
+          const delay = [2500, 5000, 10000, 20000][attempt - 1] || 25000;
           console.warn(
-            `⚠️  LLM API ${res.status} (attempt ${attempt}/3) — retrying in ${delay / 1000}s...`
+            `⚠️  LLM API ${res.status} (attempt ${attempt}/5) — retrying in ${delay / 1000}s...`
           );
           await new Promise((r) => setTimeout(r, delay));
           continue;
@@ -1242,6 +1244,10 @@ async function isFootballOnly(text, ctx) {
   // Transliteration-grounding: unknown name-like tokens must romanize back to
   // a word in the article data (catches brand-new invented names).
   if (findUngroundedTransliteration(text, ctx)) return false;
+  // Anchored captions (starting with the exact match header/article title) are
+  // unmistakably football — the deterministic vocabulary check already passed,
+  // so skip the extra LLM classifier call (fewer 429s under burst load).
+  if (anchored) return true;
   try {
     const label = await chatComplete({
       systemPrompt:
@@ -1293,8 +1299,12 @@ export async function generatePostText(type, ctx) {
       .replace(/^["'“”]|["'“”]$/g, '')
       .trim();
 
-  const make = async (nudge, target) =>
-    clean(
+  const make = async (nudge, target) => {
+    // Pace ourselves: the free tier trips 429s when we fire caption calls
+    // back-to-back (draw A + draw B + regens + classifier were ~16 calls/run).
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    await sleep(700);
+    return clean(
       await chatComplete({
         systemPrompt: tpl.systemPrompt,
         userPrompt:
@@ -1309,21 +1319,30 @@ export async function generatePostText(type, ctx) {
         temperature: tpl.temperature ?? 0.8,
       })
     );
+  };
 
   // A guarded draw: generate, run all guards, and if flagged regenerate up to
   // 3 times — each regen explicitly bans the offending name (so a stubborn
   // hallucination like "ليفاندوفسكي" in a Barça post can't survive).
   const guardedDraw = async () => {
-    let t = await make(false);
-    if (tpl.footballOnly !== false) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const bad = findUngroundedName(t, ctx) || findUngroundedTransliteration(t, ctx);
-        const pass = await isFootballOnly(t, ctx); // includes the name check
-        if (pass && !bad) return t;
-        console.warn(`⚽ Guard: flag (${bad || 'domain'}) — regenerating (${attempt}/3)...`);
-        t = await make(true, bad || undefined);
+    let t;
+    try {
+      t = await make(false);
+      if (tpl.footballOnly !== false) {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const bad = findUngroundedName(t, ctx) || findUngroundedTransliteration(t, ctx);
+          const pass = await isFootballOnly(t, ctx); // includes the name check
+          if (pass && !bad) return t;
+          console.warn(`⚽ Guard: flag (${bad || 'domain'}) — regenerating (${attempt}/3)...`);
+          t = await make(true, bad || undefined);
+        }
+        console.warn('⚽ Guard: caption still flagged after 3 attempts — accepting as-is.');
       }
-      console.warn('⚽ Guard: caption still flagged after 3 attempts — accepting as-is.');
+    } catch (err) {
+      // LLM stayed down (429s/network). If we already hold a draft (mid-regens),
+      // keep it — otherwise hard-fail rather than publish a machine fill-in.
+      if (!t) throw err;
+      console.warn(`⚠️  Regeneration interrupted after retries (${String(err?.message).slice(0, 90)}) — using last caption.`);
     }
     return t;
   };
